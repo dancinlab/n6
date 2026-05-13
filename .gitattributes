@@ -1,0 +1,15 @@
+# Linguist: .n6 is not yet a registered language on github/linguist.
+# Classify as Ruby for the language pie chart color (Ruby's `#` comments
+# + symbol-like `@P` / `@C` etc. give the closest visual approximation).
+# Code-fence highlighting still requires the custom grammar in
+# syntaxes/n6.tmLanguage.json.
+*.n6 linguist-language=Ruby
+*.n6 linguist-detectable=true
+
+# Vendored grammar — no language stats contribution
+syntaxes/n6.tmLanguage.json linguist-vendored=true
+
+# Generated previews — excluded from language stats
+docs/preview.html linguist-generated=true
+docs/preview-dark.svg linguist-generated=true
+docs/preview-light.svg linguist-generated=true

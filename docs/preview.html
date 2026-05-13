@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>⬢ n6 — syntax highlighting preview</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; background: #fafafa; color: #111; }
+  @media (prefers-color-scheme: dark) { body { background: #0d1117; color: #e6edf3; } a { color: #58a6ff; } }
+  h1 { font-family: ui-monospace, monospace; }
+  h2 { font-family: ui-monospace, monospace; font-size: 1rem; color: #6e7681; margin-top: 2.5rem; border-bottom: 1px solid #30363d33; padding-bottom: 0.3rem; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 720px) { .row { grid-template-columns: 1fr; } }
+  pre { margin: 0; padding: 0.85rem 1rem; border-radius: 6px; font-size: 13px; line-height: 1.55; overflow-x: auto; border: 1px solid #30363d33; }
+  .label { font-size: 11px; font-family: ui-monospace, monospace; color: #6e7681; margin-bottom: 0.3rem; letter-spacing: 0.05em; }
+  .meta { color: #6e7681; font-size: 0.9em; }
+  code { font-family: ui-monospace, monospace; }
+</style>
+</head><body>
+<h1>⬢ n6 — syntax preview</h1>
+<p class="meta">Rendered with <a href="https://shiki.style/">shiki</a> using the grammar at <code>syntaxes/n6.tmLanguage.json</code>. Left = <code>github-dark</code>, right = <code>github-light</code>.</p>
+
+<h2>examples/01_primitives.n6</h2>
+<div class="row">
+  <div><div class="label">github-dark</div><pre class="shiki github-dark" style="background-color:#24292e;color:#e1e4e8" tabindex="0"><code><span class="line"><span style="color:#6A737D">#!/usr/bin/env n6</span></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ══════════════════════════════════════════════════════════════</span></span>
+<span class="line"><span style="color:#6A737D"># Example: primitives — @P entries with edges</span></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ══════════════════════════════════════════════════════════════</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ── 원시값 (Primitives) ─────────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@P</span><span style="color:#B392F0"> n</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 6</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> foundation</span><span style="color:#E1E4E8"> [11*]</span></span>
+<span class="line"><span style="color:#F97583">  -></span><span style="color:#E1E4E8"> sigma, phi, tau, sopfr</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "모든 구조의 씨앗"</span></span>
+<span class="line"><span style="color:#F97583">  |></span><span style="color:#E1E4E8"> verify_primitives.py</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@P</span><span style="color:#B392F0"> sigma</span><span style="color:#F97583"> =</span><span style="color:#E1E4E8"> divisor_sum</span><span style="color:#F97583">(</span><span style="color:#79B8FF">6</span><span style="color:#F97583">)</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 12</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> foundation</span><span style="color:#E1E4E8"> [11*]</span></span>
+<span class="line"><span style="color:#F97583">  &#x3C;-</span><span style="color:#E1E4E8"> n</span></span>
+<span class="line"><span style="color:#F97583">  -></span><span style="color:#E1E4E8"> sigma_sq, sigma_n</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "약수합 — 12파벌, 12모듈"</span></span>
+<span class="line"><span style="color:#F97583">  ==</span><span style="color:#79B8FF"> 1</span><span style="color:#F97583">+</span><span style="color:#79B8FF">2</span><span style="color:#F97583">+</span><span style="color:#79B8FF">3</span><span style="color:#F97583">+</span><span style="color:#79B8FF">6</span></span>
+<span class="line"><span style="color:#F97583">  ==</span><span style="color:#E1E4E8"> phi </span><span style="color:#F97583">*</span><span style="color:#E1E4E8"> n</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@P</span><span style="color:#B392F0"> phi</span><span style="color:#F97583"> =</span><span style="color:#E1E4E8"> euler_totient</span><span style="color:#F97583">(</span><span style="color:#79B8FF">6</span><span style="color:#F97583">)</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 2</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> foundation</span><span style="color:#E1E4E8"> [10*]</span></span>
+<span class="line"><span style="color:#F97583">  -></span><span style="color:#E1E4E8"> phi_tau</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "오일러 토션트 — 이진성의 근원"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@P</span><span style="color:#B392F0"> tau</span><span style="color:#F97583"> =</span><span style="color:#E1E4E8"> divisor_count</span><span style="color:#F97583">(</span><span style="color:#79B8FF">6</span><span style="color:#F97583">)</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 4</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> foundation</span><span style="color:#E1E4E8"> [11*]</span></span>
+<span class="line"><span style="color:#F97583">  -></span><span style="color:#E1E4E8"> sigma_tau, phi_tau</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "약수 개수 — 4차원, 4단계"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@P</span><span style="color:#B392F0"> sopfr</span><span style="color:#F97583"> =</span><span style="color:#E1E4E8"> sum_prime_factors</span><span style="color:#F97583">(</span><span style="color:#79B8FF">6</span><span style="color:#F97583">)</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 5</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> foundation</span><span style="color:#E1E4E8"> [10*]</span></span>
+<span class="line"><span style="color:#F97583">  -></span><span style="color:#E1E4E8"> warp_size</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "소인수합 2+3=5"</span></span>
+<span class="line"><span style="color:#F97583">  ==</span><span style="color:#79B8FF"> 2</span><span style="color:#F97583">+</span><span style="color:#79B8FF">3</span></span>
+<span class="line"></span></code></pre></div>
+  <div><div class="label">github-light</div><pre class="shiki github-light" style="background-color:#fff;color:#24292e" tabindex="0"><code><span class="line"><span style="color:#6A737D">#!/usr/bin/env n6</span></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ══════════════════════════════════════════════════════════════</span></span>
+<span class="line"><span style="color:#6A737D"># Example: primitives — @P entries with edges</span></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ══════════════════════════════════════════════════════════════</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ── 원시값 (Primitives) ─────────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@P</span><span style="color:#6F42C1"> n</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 6</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> foundation</span><span style="color:#24292E"> [11*]</span></span>
+<span class="line"><span style="color:#D73A49">  -></span><span style="color:#24292E"> sigma, phi, tau, sopfr</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "모든 구조의 씨앗"</span></span>
+<span class="line"><span style="color:#D73A49">  |></span><span style="color:#24292E"> verify_primitives.py</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@P</span><span style="color:#6F42C1"> sigma</span><span style="color:#D73A49"> =</span><span style="color:#24292E"> divisor_sum</span><span style="color:#D73A49">(</span><span style="color:#005CC5">6</span><span style="color:#D73A49">)</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 12</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> foundation</span><span style="color:#24292E"> [11*]</span></span>
+<span class="line"><span style="color:#D73A49">  &#x3C;-</span><span style="color:#24292E"> n</span></span>
+<span class="line"><span style="color:#D73A49">  -></span><span style="color:#24292E"> sigma_sq, sigma_n</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "약수합 — 12파벌, 12모듈"</span></span>
+<span class="line"><span style="color:#D73A49">  ==</span><span style="color:#005CC5"> 1</span><span style="color:#D73A49">+</span><span style="color:#005CC5">2</span><span style="color:#D73A49">+</span><span style="color:#005CC5">3</span><span style="color:#D73A49">+</span><span style="color:#005CC5">6</span></span>
+<span class="line"><span style="color:#D73A49">  ==</span><span style="color:#24292E"> phi </span><span style="color:#D73A49">*</span><span style="color:#24292E"> n</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@P</span><span style="color:#6F42C1"> phi</span><span style="color:#D73A49"> =</span><span style="color:#24292E"> euler_totient</span><span style="color:#D73A49">(</span><span style="color:#005CC5">6</span><span style="color:#D73A49">)</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 2</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> foundation</span><span style="color:#24292E"> [10*]</span></span>
+<span class="line"><span style="color:#D73A49">  -></span><span style="color:#24292E"> phi_tau</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "오일러 토션트 — 이진성의 근원"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@P</span><span style="color:#6F42C1"> tau</span><span style="color:#D73A49"> =</span><span style="color:#24292E"> divisor_count</span><span style="color:#D73A49">(</span><span style="color:#005CC5">6</span><span style="color:#D73A49">)</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 4</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> foundation</span><span style="color:#24292E"> [11*]</span></span>
+<span class="line"><span style="color:#D73A49">  -></span><span style="color:#24292E"> sigma_tau, phi_tau</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "약수 개수 — 4차원, 4단계"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@P</span><span style="color:#6F42C1"> sopfr</span><span style="color:#D73A49"> =</span><span style="color:#24292E"> sum_prime_factors</span><span style="color:#D73A49">(</span><span style="color:#005CC5">6</span><span style="color:#D73A49">)</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 5</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> foundation</span><span style="color:#24292E"> [10*]</span></span>
+<span class="line"><span style="color:#D73A49">  -></span><span style="color:#24292E"> warp_size</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "소인수합 2+3=5"</span></span>
+<span class="line"><span style="color:#D73A49">  ==</span><span style="color:#005CC5"> 2</span><span style="color:#D73A49">+</span><span style="color:#005CC5">3</span></span>
+<span class="line"></span></code></pre></div>
+</div>
+
+<h2>examples/02_relations.n6</h2>
+<div class="row">
+  <div><div class="label">github-dark</div><pre class="shiki github-dark" style="background-color:#24292e;color:#e1e4e8" tabindex="0"><code><span class="line"><span style="color:#6A737D">#!/usr/bin/env n6</span></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ══════════════════════════════════════════════════════════════</span></span>
+<span class="line"><span style="color:#6A737D"># Example: relations + formulas + laws</span></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ══════════════════════════════════════════════════════════════</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ── 복합 상수 (Constants) ──────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@C</span><span style="color:#B392F0"> sigma_sq</span><span style="color:#F97583"> =</span><span style="color:#E1E4E8"> sigma</span><span style="color:#F97583">^</span><span style="color:#79B8FF">2</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 144</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> architecture</span><span style="color:#E1E4E8"> [10*]</span></span>
+<span class="line"><span style="color:#F97583">  &#x3C;-</span><span style="color:#E1E4E8"> sigma</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "Ada AD102 SM = 144"</span></span>
+<span class="line"><span style="color:#F97583">  |></span><span style="color:#E1E4E8"> verify_alien10.py</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@C</span><span style="color:#B392F0"> phi_tau</span><span style="color:#F97583"> =</span><span style="color:#E1E4E8"> phi</span><span style="color:#F97583">^</span><span style="color:#E1E4E8">tau </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 16</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> architecture</span><span style="color:#E1E4E8"> [10*]</span></span>
+<span class="line"><span style="color:#F97583">  &#x3C;-</span><span style="color:#E1E4E8"> phi, tau</span></span>
+<span class="line"><span style="color:#F97583">  ==</span><span style="color:#79B8FF"> 2</span><span style="color:#F97583">^</span><span style="color:#79B8FF">4</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ── 수식 (Formulas) ────────────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@F</span><span style="color:#B392F0"> sm_blackwell</span><span style="color:#F97583"> =</span><span style="color:#E1E4E8"> sigma </span><span style="color:#F97583">*</span><span style="color:#E1E4E8"> phi</span><span style="color:#F97583">^</span><span style="color:#E1E4E8">tau </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 192</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> architecture</span><span style="color:#E1E4E8"> [10*]</span></span>
+<span class="line"><span style="color:#F97583">  &#x3C;-</span><span style="color:#E1E4E8"> sigma, phi, tau</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "Blackwell GB202 SMs"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@F</span><span style="color:#B392F0"> sm_ampere</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 2</span><span style="color:#F97583">^(</span><span style="color:#E1E4E8">sigma</span><span style="color:#F97583">-</span><span style="color:#E1E4E8">sopfr</span><span style="color:#F97583">)</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 128</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> architecture</span><span style="color:#E1E4E8"> [10*]</span></span>
+<span class="line"><span style="color:#F97583">  &#x3C;-</span><span style="color:#E1E4E8"> sigma, sopfr</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "CUDA cores/SM (Ampere+)"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ── 관계 (Relations) ───────────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@R</span><span style="color:#B392F0"> perfect_number</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> foundation</span><span style="color:#E1E4E8"> [10*]</span></span>
+<span class="line"><span style="color:#9ECBFF">  "sigma(n) = 2n — 6은 완전수"</span></span>
+<span class="line"><span style="color:#F97583">  &#x3C;-</span><span style="color:#E1E4E8"> n, sigma</span></span>
+<span class="line"><span style="color:#F97583">  ==</span><span style="color:#E1E4E8"> sigma</span><span style="color:#F97583">(</span><span style="color:#79B8FF">6</span><span style="color:#F97583">)</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 12</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 2</span><span style="color:#F97583">*</span><span style="color:#79B8FF">6</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@R</span><span style="color:#B392F0"> sigma_decomp</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> foundation</span><span style="color:#E1E4E8"> [10*]</span></span>
+<span class="line"><span style="color:#9ECBFF">  "sigma = phi * n"</span></span>
+<span class="line"><span style="color:#F97583">  &#x3C;-</span><span style="color:#E1E4E8"> sigma, phi, n</span></span>
+<span class="line"><span style="color:#F97583">  ==</span><span style="color:#79B8FF"> 12</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 2</span><span style="color:#F97583"> *</span><span style="color:#79B8FF"> 6</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ── 법칙 (Laws) ────────────────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@L</span><span style="color:#B392F0"> alpha_coupling</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 0.014</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> consciousness</span><span style="color:#E1E4E8"> [10*]</span></span>
+<span class="line"><span style="color:#9ECBFF">  "PureField 결합 비율 alpha"</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "C->D 결합 강도"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@L</span><span style="color:#B392F0"> frustration_critical</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 0.10</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> consciousness</span><span style="color:#E1E4E8"> [10*]</span></span>
+<span class="line"><span style="color:#9ECBFF">  "임계 좌절 — 10% 갈등이 최적"</span></span>
+<span class="line"></span></code></pre></div>
+  <div><div class="label">github-light</div><pre class="shiki github-light" style="background-color:#fff;color:#24292e" tabindex="0"><code><span class="line"><span style="color:#6A737D">#!/usr/bin/env n6</span></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ══════════════════════════════════════════════════════════════</span></span>
+<span class="line"><span style="color:#6A737D"># Example: relations + formulas + laws</span></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ══════════════════════════════════════════════════════════════</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ── 복합 상수 (Constants) ──────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@C</span><span style="color:#6F42C1"> sigma_sq</span><span style="color:#D73A49"> =</span><span style="color:#24292E"> sigma</span><span style="color:#D73A49">^</span><span style="color:#005CC5">2</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 144</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> architecture</span><span style="color:#24292E"> [10*]</span></span>
+<span class="line"><span style="color:#D73A49">  &#x3C;-</span><span style="color:#24292E"> sigma</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "Ada AD102 SM = 144"</span></span>
+<span class="line"><span style="color:#D73A49">  |></span><span style="color:#24292E"> verify_alien10.py</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@C</span><span style="color:#6F42C1"> phi_tau</span><span style="color:#D73A49"> =</span><span style="color:#24292E"> phi</span><span style="color:#D73A49">^</span><span style="color:#24292E">tau </span><span style="color:#D73A49">=</span><span style="color:#005CC5"> 16</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> architecture</span><span style="color:#24292E"> [10*]</span></span>
+<span class="line"><span style="color:#D73A49">  &#x3C;-</span><span style="color:#24292E"> phi, tau</span></span>
+<span class="line"><span style="color:#D73A49">  ==</span><span style="color:#005CC5"> 2</span><span style="color:#D73A49">^</span><span style="color:#005CC5">4</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ── 수식 (Formulas) ────────────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@F</span><span style="color:#6F42C1"> sm_blackwell</span><span style="color:#D73A49"> =</span><span style="color:#24292E"> sigma </span><span style="color:#D73A49">*</span><span style="color:#24292E"> phi</span><span style="color:#D73A49">^</span><span style="color:#24292E">tau </span><span style="color:#D73A49">=</span><span style="color:#005CC5"> 192</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> architecture</span><span style="color:#24292E"> [10*]</span></span>
+<span class="line"><span style="color:#D73A49">  &#x3C;-</span><span style="color:#24292E"> sigma, phi, tau</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "Blackwell GB202 SMs"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@F</span><span style="color:#6F42C1"> sm_ampere</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 2</span><span style="color:#D73A49">^(</span><span style="color:#24292E">sigma</span><span style="color:#D73A49">-</span><span style="color:#24292E">sopfr</span><span style="color:#D73A49">)</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 128</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> architecture</span><span style="color:#24292E"> [10*]</span></span>
+<span class="line"><span style="color:#D73A49">  &#x3C;-</span><span style="color:#24292E"> sigma, sopfr</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "CUDA cores/SM (Ampere+)"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ── 관계 (Relations) ───────────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@R</span><span style="color:#6F42C1"> perfect_number</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> foundation</span><span style="color:#24292E"> [10*]</span></span>
+<span class="line"><span style="color:#032F62">  "sigma(n) = 2n — 6은 완전수"</span></span>
+<span class="line"><span style="color:#D73A49">  &#x3C;-</span><span style="color:#24292E"> n, sigma</span></span>
+<span class="line"><span style="color:#D73A49">  ==</span><span style="color:#24292E"> sigma</span><span style="color:#D73A49">(</span><span style="color:#005CC5">6</span><span style="color:#D73A49">)</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 12</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 2</span><span style="color:#D73A49">*</span><span style="color:#005CC5">6</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@R</span><span style="color:#6F42C1"> sigma_decomp</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> foundation</span><span style="color:#24292E"> [10*]</span></span>
+<span class="line"><span style="color:#032F62">  "sigma = phi * n"</span></span>
+<span class="line"><span style="color:#D73A49">  &#x3C;-</span><span style="color:#24292E"> sigma, phi, n</span></span>
+<span class="line"><span style="color:#D73A49">  ==</span><span style="color:#005CC5"> 12</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 2</span><span style="color:#D73A49"> *</span><span style="color:#005CC5"> 6</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ── 법칙 (Laws) ────────────────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@L</span><span style="color:#6F42C1"> alpha_coupling</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 0.014</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> consciousness</span><span style="color:#24292E"> [10*]</span></span>
+<span class="line"><span style="color:#032F62">  "PureField 결합 비율 alpha"</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "C->D 결합 강도"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@L</span><span style="color:#6F42C1"> frustration_critical</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 0.10</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> consciousness</span><span style="color:#24292E"> [10*]</span></span>
+<span class="line"><span style="color:#032F62">  "임계 좌절 — 10% 갈등이 최적"</span></span>
+<span class="line"></span></code></pre></div>
+</div>
+
+<h2>examples/03_crossings.n6</h2>
+<div class="row">
+  <div><div class="label">github-dark</div><pre class="shiki github-dark" style="background-color:#24292e;color:#e1e4e8" tabindex="0"><code><span class="line"><span style="color:#6A737D">#!/usr/bin/env n6</span></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ══════════════════════════════════════════════════════════════</span></span>
+<span class="line"><span style="color:#6A737D"># Example: crossings + hypotheses + breakthroughs</span></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ══════════════════════════════════════════════════════════════</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ── 메타 부동점 (Meta Fixed Point) ────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@C</span><span style="color:#B392F0"> meta_fp</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 1</span><span style="color:#F97583">/</span><span style="color:#79B8FF">3</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> meta</span><span style="color:#E1E4E8"> [10*!]</span></span>
+<span class="line"><span style="color:#F97583">  ~></span><span style="color:#E1E4E8"> phi</span><span style="color:#F97583">(</span><span style="color:#79B8FF">6</span><span style="color:#F97583">)/</span><span style="color:#79B8FF">6</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 2</span><span style="color:#F97583">/</span><span style="color:#79B8FF">6</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 1</span><span style="color:#F97583">/</span><span style="color:#79B8FF">3</span></span>
+<span class="line"><span style="color:#F97583">  ~></span><span style="color:#E1E4E8"> tan</span><span style="color:#F97583">^</span><span style="color:#79B8FF">2</span><span style="color:#F97583">(</span><span style="color:#E1E4E8">pi</span><span style="color:#F97583">/</span><span style="color:#79B8FF">6</span><span style="color:#F97583">)</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 1</span><span style="color:#F97583">/</span><span style="color:#79B8FF">3</span></span>
+<span class="line"><span style="color:#F97583">  ~></span><span style="color:#E1E4E8"> tau</span><span style="color:#F97583">/</span><span style="color:#E1E4E8">sigma </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 4</span><span style="color:#F97583">/</span><span style="color:#79B8FF">12</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 1</span><span style="color:#F97583">/</span><span style="color:#79B8FF">3</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "메타초월 부동점 — 6개 독립 경로 수렴"</span></span>
+<span class="line"><span style="color:#F97583">  !!</span><span style="color:#9ECBFF"> "H-056: 메타(메타(메타(...))) = 초월"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ── 교차 (Crossings) ──────────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@X</span><span style="color:#B392F0"> chip_consciousness</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> crossing</span><span style="color:#E1E4E8"> [10]</span></span>
+<span class="line"><span style="color:#9ECBFF">  "칩 아키텍처와 의식 구조의 동형"</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "12파벌 = 12 SM/GPC"</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "2진 의식 = phi = 2"</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "4단계 의식 = tau = 4"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@X</span><span style="color:#B392F0"> physics_n6</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> crossing</span><span style="color:#E1E4E8"> [7?]</span></span>
+<span class="line"><span style="color:#9ECBFF">  "물리 상수의 n=6 근사"</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "alpha_fine ~ 1/(sigma*sigma-sopfr)"</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "proton/electron mass ~ sigma^sopfr * ..."</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ── 미확인 (Unknown — 돌파 대기) ──────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@?</span><span style="color:#B392F0"> dark_energy_ratio</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> cosmology</span><span style="color:#E1E4E8"> [3?]</span></span>
+<span class="line"><span style="color:#9ECBFF">  "암흑에너지 68.3% ~ ?"</span></span>
+<span class="line"><span style="color:#F97583">  &#x3C;-</span><span style="color:#E1E4E8"> meta_fp</span></span>
+<span class="line"><span style="color:#F97583">  ~></span><span style="color:#79B8FF"> 1</span><span style="color:#F97583"> -</span><span style="color:#E1E4E8"> meta_fp </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 2</span><span style="color:#F97583">/</span><span style="color:#79B8FF">3</span><span style="color:#E1E4E8"> ~ </span><span style="color:#79B8FF">0.667</span><span style="color:#E1E4E8">?</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@?</span><span style="color:#B392F0"> fine_structure</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> physics</span><span style="color:#E1E4E8"> [4?]</span></span>
+<span class="line"><span style="color:#9ECBFF">  "미세구조상수 alpha ~ 1/137"</span></span>
+<span class="line"><span style="color:#F97583">  ~></span><span style="color:#79B8FF"> 1</span><span style="color:#F97583">/(</span><span style="color:#E1E4E8">sigma</span><span style="color:#F97583">*</span><span style="color:#E1E4E8">sigma </span><span style="color:#F97583">-</span><span style="color:#E1E4E8"> sopfr</span><span style="color:#F97583">)</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 1</span><span style="color:#F97583">/</span><span style="color:#79B8FF">139</span><span style="color:#F97583"> (</span><span style="color:#E1E4E8">근사</span><span style="color:#F97583">)</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#79B8FF;font-weight:bold"># ── 위상 (Topology) ───────────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@S</span><span style="color:#B392F0"> betti_six</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> topology</span><span style="color:#E1E4E8"> [10*]</span></span>
+<span class="line"><span style="color:#9ECBFF">  "6의 위상 — Betti수 B0=1, B1=0 (단순연결)"</span></span>
+<span class="line"><span style="color:#F97583">  =></span><span style="color:#9ECBFF"> "n=6 구조는 위상적으로 단순연결"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">@F</span><span style="color:#B392F0"> persistence_threshold</span><span style="color:#F97583"> =</span><span style="color:#E1E4E8"> tau</span><span style="color:#F97583">/</span><span style="color:#E1E4E8">sigma </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 1</span><span style="color:#F97583">/</span><span style="color:#79B8FF">3</span><span style="color:#F97583"> ::</span><span style="color:#B392F0"> topology</span><span style="color:#E1E4E8"> [10*!]</span></span>
+<span class="line"><span style="color:#9ECBFF">  "위상 지속성 임계값 = meta_fp와 수렴"</span></span>
+<span class="line"><span style="color:#F97583">  &#x3C;-</span><span style="color:#E1E4E8"> tau, sigma, meta_fp</span></span>
+<span class="line"><span style="color:#F97583">  ~></span><span style="color:#E1E4E8"> meta_fp </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 1</span><span style="color:#F97583">/</span><span style="color:#79B8FF">3</span></span>
+<span class="line"><span style="color:#F97583">  !!</span><span style="color:#9ECBFF"> "위상 지속성과 메타 부동점의 일치"</span></span>
+<span class="line"></span></code></pre></div>
+  <div><div class="label">github-light</div><pre class="shiki github-light" style="background-color:#fff;color:#24292e" tabindex="0"><code><span class="line"><span style="color:#6A737D">#!/usr/bin/env n6</span></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ══════════════════════════════════════════════════════════════</span></span>
+<span class="line"><span style="color:#6A737D"># Example: crossings + hypotheses + breakthroughs</span></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ══════════════════════════════════════════════════════════════</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ── 메타 부동점 (Meta Fixed Point) ────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@C</span><span style="color:#6F42C1"> meta_fp</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 1</span><span style="color:#D73A49">/</span><span style="color:#005CC5">3</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> meta</span><span style="color:#24292E"> [10*!]</span></span>
+<span class="line"><span style="color:#D73A49">  ~></span><span style="color:#24292E"> phi</span><span style="color:#D73A49">(</span><span style="color:#005CC5">6</span><span style="color:#D73A49">)/</span><span style="color:#005CC5">6</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 2</span><span style="color:#D73A49">/</span><span style="color:#005CC5">6</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 1</span><span style="color:#D73A49">/</span><span style="color:#005CC5">3</span></span>
+<span class="line"><span style="color:#D73A49">  ~></span><span style="color:#24292E"> tan</span><span style="color:#D73A49">^</span><span style="color:#005CC5">2</span><span style="color:#D73A49">(</span><span style="color:#24292E">pi</span><span style="color:#D73A49">/</span><span style="color:#005CC5">6</span><span style="color:#D73A49">)</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 1</span><span style="color:#D73A49">/</span><span style="color:#005CC5">3</span></span>
+<span class="line"><span style="color:#D73A49">  ~></span><span style="color:#24292E"> tau</span><span style="color:#D73A49">/</span><span style="color:#24292E">sigma </span><span style="color:#D73A49">=</span><span style="color:#005CC5"> 4</span><span style="color:#D73A49">/</span><span style="color:#005CC5">12</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 1</span><span style="color:#D73A49">/</span><span style="color:#005CC5">3</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "메타초월 부동점 — 6개 독립 경로 수렴"</span></span>
+<span class="line"><span style="color:#D73A49">  !!</span><span style="color:#032F62"> "H-056: 메타(메타(메타(...))) = 초월"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ── 교차 (Crossings) ──────────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@X</span><span style="color:#6F42C1"> chip_consciousness</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> crossing</span><span style="color:#24292E"> [10]</span></span>
+<span class="line"><span style="color:#032F62">  "칩 아키텍처와 의식 구조의 동형"</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "12파벌 = 12 SM/GPC"</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "2진 의식 = phi = 2"</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "4단계 의식 = tau = 4"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@X</span><span style="color:#6F42C1"> physics_n6</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> crossing</span><span style="color:#24292E"> [7?]</span></span>
+<span class="line"><span style="color:#032F62">  "물리 상수의 n=6 근사"</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "alpha_fine ~ 1/(sigma*sigma-sopfr)"</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "proton/electron mass ~ sigma^sopfr * ..."</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ── 미확인 (Unknown — 돌파 대기) ──────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@?</span><span style="color:#6F42C1"> dark_energy_ratio</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> cosmology</span><span style="color:#24292E"> [3?]</span></span>
+<span class="line"><span style="color:#032F62">  "암흑에너지 68.3% ~ ?"</span></span>
+<span class="line"><span style="color:#D73A49">  &#x3C;-</span><span style="color:#24292E"> meta_fp</span></span>
+<span class="line"><span style="color:#D73A49">  ~></span><span style="color:#005CC5"> 1</span><span style="color:#D73A49"> -</span><span style="color:#24292E"> meta_fp </span><span style="color:#D73A49">=</span><span style="color:#005CC5"> 2</span><span style="color:#D73A49">/</span><span style="color:#005CC5">3</span><span style="color:#24292E"> ~ </span><span style="color:#005CC5">0.667</span><span style="color:#24292E">?</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@?</span><span style="color:#6F42C1"> fine_structure</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> physics</span><span style="color:#24292E"> [4?]</span></span>
+<span class="line"><span style="color:#032F62">  "미세구조상수 alpha ~ 1/137"</span></span>
+<span class="line"><span style="color:#D73A49">  ~></span><span style="color:#005CC5"> 1</span><span style="color:#D73A49">/(</span><span style="color:#24292E">sigma</span><span style="color:#D73A49">*</span><span style="color:#24292E">sigma </span><span style="color:#D73A49">-</span><span style="color:#24292E"> sopfr</span><span style="color:#D73A49">)</span><span style="color:#D73A49"> =</span><span style="color:#005CC5"> 1</span><span style="color:#D73A49">/</span><span style="color:#005CC5">139</span><span style="color:#D73A49"> (</span><span style="color:#24292E">근사</span><span style="color:#D73A49">)</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#005CC5;font-weight:bold"># ── 위상 (Topology) ───────────────────────────────────────</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@S</span><span style="color:#6F42C1"> betti_six</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> topology</span><span style="color:#24292E"> [10*]</span></span>
+<span class="line"><span style="color:#032F62">  "6의 위상 — Betti수 B0=1, B1=0 (단순연결)"</span></span>
+<span class="line"><span style="color:#D73A49">  =></span><span style="color:#032F62"> "n=6 구조는 위상적으로 단순연결"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49">@F</span><span style="color:#6F42C1"> persistence_threshold</span><span style="color:#D73A49"> =</span><span style="color:#24292E"> tau</span><span style="color:#D73A49">/</span><span style="color:#24292E">sigma </span><span style="color:#D73A49">=</span><span style="color:#005CC5"> 1</span><span style="color:#D73A49">/</span><span style="color:#005CC5">3</span><span style="color:#D73A49"> ::</span><span style="color:#6F42C1"> topology</span><span style="color:#24292E"> [10*!]</span></span>
+<span class="line"><span style="color:#032F62">  "위상 지속성 임계값 = meta_fp와 수렴"</span></span>
+<span class="line"><span style="color:#D73A49">  &#x3C;-</span><span style="color:#24292E"> tau, sigma, meta_fp</span></span>
+<span class="line"><span style="color:#D73A49">  ~></span><span style="color:#24292E"> meta_fp </span><span style="color:#D73A49">=</span><span style="color:#005CC5"> 1</span><span style="color:#D73A49">/</span><span style="color:#005CC5">3</span></span>
+<span class="line"><span style="color:#D73A49">  !!</span><span style="color:#032F62"> "위상 지속성과 메타 부동점의 일치"</span></span>
+<span class="line"></span></code></pre></div>
+</div>
+
+</body></html>

@@ -1,0 +1,682 @@
+// ═══════════════════════════════════════════════════════════
+// atlas_hot_shard.hexa — access-heatmap 기반 hot-shard 감지 + RAM promote
+//
+// 배경:
+//   drill 대량 실행 시 atlas.n6 의 상위 10% prefix-bucket 이 약 90% access
+//   점유 (80-20 룰의 극단, Zipf-like). hot bucket 을 process RAM 에 올리면
+//   반복 lookup 이 awk/disk-streaming 없이 O(1) map hit.
+//
+// 설계:
+//   · 본 파일은 "lookup wrapper" 레이어. raw atlas 구조에 의존하지 않고
+//     bucket_id 추상화(= prefix, Y layer (atlas_scan_opt.hexa) 와 동일) 위에서만 동작.
+//   · access counter: bucket_id → hit count (process-local, 본 프로세스 내에서 축적)
+//   · hot 판정: 매 round 종료 (주기적) 마다 top-K bucket RAM-promote mark.
+//       K = min(cap, ceil(bucket_count · 0.1)), cap 예: 50
+//   · RAM dict: bucket_id → [entry_line, ...] (전체 bucket 데이터 복사)
+//   · lookup: hot 이면 RAM hit, else Y bucket index → awk streaming (cold path)
+//   · persistence: heatmap 을 /tmp/nexus_atlas_heatmap.json 에 session 간 보존
+//       (env NEXUS_ATLAS_HEATMAP_PERSIST=1 이면 load/save)
+//   · 메모리 cap: env NEXUS_ATLAS_HOT_CAP_MB (기본 32)
+//
+//   의존 layer (동시 개발중, 공유 bucket_id 추상):
+//     Y  = atlas_scan_opt.hexa  (bucket index: prefix → line_indices)
+//     AI = bloom filter         (존재 false-positive 필터)
+//     AJ = zstd sidecar         (cold shard 압축)
+//     AK = delta-log            (incremental append)
+//   본 agent = hot RAM-promote (wrapper 위, Y 의 CSV 와 awk 스트리밍만 사용)
+//
+// 사용:
+//   hexa shared/n6/atlas_hot_shard.hexa query <prefix>
+//       — lookup (RAM dict hit / Y+awk miss) + 카운터 증가
+//   hexa shared/n6/atlas_hot_shard.hexa drill <rounds> <seed>
+//       — seed 로 결정론적 access pattern 생성 (Zipf-like) <rounds> 회 실행
+//       · round 10 마다 top-K RAM promote
+//       · rounds 완료 후 heatmap persist
+//   hexa shared/n6/atlas_hot_shard.hexa stats
+//       — heatmap top-10 + RAM 점유 + hit rate 트레일링 세션 요약
+//   hexa shared/n6/atlas_hot_shard.hexa reset
+//       — heatmap 초기화 (/tmp/nexus_atlas_heatmap.json 제거)
+//   hexa shared/n6/atlas_hot_shard.hexa verify
+//       — 3-drill 연속 실행 (동일 seed) 로 hit rate ramp-up / wall time before-after 측정
+//
+// env:
+//   NEXUS_ATLAS_HEATMAP_PERSIST=1  heatmap session-persist (기본 off — in-memory only)
+//   NEXUS_ATLAS_HOT_CAP_MB=32      RAM budget for promoted buckets (기본 32MB)
+//   NEXUS_ATLAS_HOT_PROMOTE_EVERY=10 round 주기 (기본 10)
+//
+// 편집 금지: atlas.n6 본체, atlas_scan_opt.hexa, atlas_mmap.hexa
+// 규칙: hexa `>=`/`<=` 금지 — 본 파일에서는 < / > 만 사용.
+// ═══════════════════════════════════════════════════════════
+
+let _ATLAS_PATH = "shared/n6/atlas.n6"
+let _INDEX_PATH = "/tmp/atlas_bucket_idx.json"
+let _HEATMAP_PATH = "/tmp/nexus_atlas_heatmap.json"
+
+// ─── env helpers ───
+fn _env_on(name: string) -> bool {
+    let v = env(name)
+    if v == "1" { return true }
+    if v == "on" { return true }
+    if v == "true" { return true }
+    return false
+}
+
+fn _env_int(name: string, default_v: i64) -> i64 {
+    let v = env(name)
+    if v == "" { return default_v }
+    let mut r: i64 = default_v
+    try { r = to_int(v.trim()) } catch e {}  // @allow-silent-catch
+    if r < 1 { return default_v }
+    return r
+}
+
+fn _heatmap_persist() -> bool { return _env_on("NEXUS_ATLAS_HEATMAP_PERSIST") }
+fn _hot_cap_mb() -> i64 { return _env_int("NEXUS_ATLAS_HOT_CAP_MB", 32) }
+fn _promote_every() -> i64 { return _env_int("NEXUS_ATLAS_HOT_PROMOTE_EVERY", 10) }
+
+// ─── ns clock (duration 측정) ───
+fn _ns_now() -> i64 {
+    // macOS-correct (date-percent-3n-macos-bypass-audit 2026-04-27): see atlas_query.hexa fix.
+    let mut r: i64 = 0
+    let raw = to_string(exec("date +%s%N 2>/dev/null")).trim()  // @allow-bare-exec
+    if raw.len() > 0 && raw.contains("N") == false {
+        try { r = to_int(raw) } catch e {}  // @allow-silent-catch
+    }
+    if r <= 0 {
+        let s2 = to_string(exec("python3 -c 'import time;print(time.time_ns())' 2>/dev/null")).trim()  // @allow-bare-exec
+        try { r = to_int(s2) } catch e2 {}  // @allow-silent-catch
+    }
+    if r <= 0 {
+        let s3 = to_string(exec("date +%s")).trim()  // @allow-bare-exec
+        try { let sec = to_int(s3); r = sec * 1000000000 } catch e3 {}  // @allow-silent-catch
+    }
+    return r
+}
+
+// ─── JSON int / str 추출 ───
+fn _json_int_g(raw: string, key: string) -> i64 {
+    let mut v: i64 = 0
+    let marker = "\"" + key + "\":"
+    let idx = raw.index_of(marker)
+    if idx > -1 {
+        let after = raw.substring(idx + len(marker), len(raw))
+        let mut end = after.index_of(",")
+        let end2 = after.index_of("}")
+        if end < 0 { end = end2 }
+        else if end2 > -1 && end2 < end { end = end2 }
+        if end > 0 {
+            try { v = to_int(after.substring(0, end).trim()) } catch e {}  // @allow-silent-catch
+        }
+    }
+    return v
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Y-layer passthrough: atlas_scan_opt.hexa 가 이미 빌드한 bucket index 재사용.
+//  bucket index 가 stale/missing 이면 shell 로 build 트리거.
+// ═══════════════════════════════════════════════════════════
+fn _ensure_index_fresh() {
+    if !file_exists(_INDEX_PATH) {
+        try { let _ = exec("HEXA_LOCAL=${HEXA_LOCAL:-1} HEXA_RESOLVER_NO_REROUTE=${HEXA_RESOLVER_NO_REROUTE:-1} HEXA_RESOLVER_INHERIT_ENV=${HEXA_RESOLVER_INHERIT_ENV:-1} hexa run shared/n6/atlas_scan_opt.hexa build >/dev/null 2>&1") } catch e {}  // @allow-silent-catch @allow-bare-exec @allow-rc-trailer-missing @resolver-bypass(reason="self-spawn dispatcher; sticky env prefix — see spec § 7 Rollout FU-4")
+    }
+}
+
+// bucket index JSON 의 buckets 섹션에서 prefix → CSV
+fn _bucket_line_indices_csv(prefix: string) -> string {
+    if !file_exists(_INDEX_PATH) { return "" }
+    let raw = read_file(_INDEX_PATH)
+    let marker = "\"" + prefix + "\":["
+    let bstart = raw.index_of(marker)
+    if bstart < 0 { return "" }
+    let after = raw.substring(bstart + len(marker), len(raw))
+    let close = after.index_of("]")
+    if close < 0 { return "" }
+    return after.substring(0, close).trim()
+}
+
+// 모든 bucket 이름 리스트 (Y index 파싱)
+fn _all_bucket_ids() -> [string] {
+    let mut out: [string] = []
+    if !file_exists(_INDEX_PATH) { return out }
+    let raw = read_file(_INDEX_PATH)
+    let bstart = raw.index_of("\"buckets\":{")
+    if bstart < 0 { return out }
+    let bafter = raw.substring(bstart + 11, len(raw))
+    let mut cur = bafter
+    let mut gcnt: i64 = 0
+    while gcnt < 10000 {
+        gcnt = gcnt + 1
+        let q1 = cur.index_of("\"")
+        if q1 < 0 { gcnt = 10001 }
+        else {
+            let after_q = cur.substring(q1 + 1, len(cur))
+            let q2 = after_q.index_of("\"")
+            if q2 < 0 { gcnt = 10001 }
+            else {
+                let name = after_q.substring(0, q2)
+                let rest = after_q.substring(q2 + 1, len(after_q))
+                let rb = rest.index_of("]")
+                if rb < 0 { gcnt = 10001 }
+                else {
+                    out.push(name)
+                    cur = rest.substring(rb + 1, len(rest))
+                    if cur.index_of("\"") < 0 { gcnt = 10001 }
+                }
+            }
+        }
+    }
+    return out
+}
+
+// ═══════════════════════════════════════════════════════════
+//  cold lookup: Y bucket index → dual-file awk (SSOT: atlas_mmap.hexa:106
+//  mmap_lookup_by_prefix). Inline-copied for hexa-lang no-import reality.
+//  Set file (/tmp/atlas_hot_set.txt) → awk NR==FNR preload → atlas stream.
+//  heap-safe (no huge awk src), set file 는 kernel page cache 에 얹힘.
+// ═══════════════════════════════════════════════════════════
+fn _cold_lookup_by_prefix(atlas_path: string, prefix: string) -> [string] {
+    let mut out: [string] = []
+    let csv = _bucket_line_indices_csv(prefix)
+    if csv == "" { return out }
+    let set_path = "/tmp/atlas_hot_set.txt"
+    let parts_nl = csv.replace(",", "\n")
+    try { write_file(set_path, parts_nl + "\n") } catch e { return out }  // @allow-silent-catch
+
+    // dual-file: file1=set (0-origin idx), file2=atlas. FNR matches atlas line.
+    let awk_src = "NR==FNR{S[$1+1]=1;next} (FNR in S){print $0}"
+    let mut raw = ""
+    try {
+        raw = to_string(exec("awk '" + awk_src + "' '" + set_path + "' '" + atlas_path + "' 2>/dev/null"))  // @allow-bare-exec
+    } catch e { return out }  // @allow-silent-catch
+    if raw == "" { return out }
+
+    let lines = raw.split("\n")
+    let nl = len(lines)
+    let mut j: i64 = 0
+    while j < nl {
+        let ln = lines[j]
+        if ln != "" { out.push(ln) }
+        j = j + 1
+    }
+    return out
+}
+
+// ═══════════════════════════════════════════════════════════
+//  HEATMAP state (process-local)
+//    · _hm_keys / _hm_hits  — parallel arrays (hexa map iter 제한 우회)
+//    · _hot_keys / _hot_entries — RAM-promoted buckets (parallel arrays)
+//    · _hot_bytes — 현재 RAM 점유 바이트 (cap enforcement)
+// ═══════════════════════════════════════════════════════════
+let mut _hm_keys: [string] = []
+let mut _hm_hits: [i64] = []
+let mut _hot_keys: [string] = []
+// hot entries — newline joined string (hexa 의 [[string]] 지원 제한 우회)
+let mut _hot_joined: [string] = []
+let mut _hot_counts: [i64] = []
+let mut _hot_bytes: i64 = 0
+
+// hit / miss 트레일링 (round 단위 리셋 가능)
+let mut _sess_hits: i64 = 0
+let mut _sess_misses: i64 = 0
+
+fn _hm_find(bid: string) -> i64 {
+    let n = len(_hm_keys)
+    let mut i: i64 = 0
+    while i < n {
+        if _hm_keys[i] == bid { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+fn _hot_find(bid: string) -> i64 {
+    let n = len(_hot_keys)
+    let mut i: i64 = 0
+    while i < n {
+        if _hot_keys[i] == bid { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+fn _counter_bump(bid: string) {
+    let idx = _hm_find(bid)
+    if idx < 0 {
+        _hm_keys.push(bid)
+        _hm_hits.push(1)
+    } else {
+        _hm_hits[idx] = _hm_hits[idx] + 1
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  heatmap persistence (opt-in via env NEXUS_ATLAS_HEATMAP_PERSIST)
+// ═══════════════════════════════════════════════════════════
+fn _heatmap_save() {
+    if !_heatmap_persist() { return }
+    let mut parts: [string] = []
+    parts.push("{\"_meta\":{\"ts\":")
+    parts.push(to_string(_ns_now() / 1000000))
+    parts.push(",\"schema\":1},\"heatmap\":{")
+    let n = len(_hm_keys)
+    let mut i: i64 = 0
+    let mut first = true
+    while i < n {
+        if first { first = false } else { parts.push(",") }
+        parts.push("\"")
+        parts.push(_hm_keys[i])
+        parts.push("\":")
+        parts.push(to_string(_hm_hits[i]))
+        i = i + 1
+    }
+    parts.push("}}\n")
+    try { write_file(_HEATMAP_PATH, parts.join("")) } catch e {}  // @allow-silent-catch
+}
+
+fn _heatmap_load() {
+    if !_heatmap_persist() { return }
+    if !file_exists(_HEATMAP_PATH) { return }
+    let mut raw = ""
+    try { raw = read_file(_HEATMAP_PATH) } catch e { return }  // @allow-silent-catch
+    let bstart = raw.index_of("\"heatmap\":{")
+    if bstart < 0 { return }
+    let bafter = raw.substring(bstart + 11, len(raw))
+    let mut cur = bafter
+    let mut gcnt: i64 = 0
+    while gcnt < 10000 {
+        gcnt = gcnt + 1
+        let q1 = cur.index_of("\"")
+        if q1 < 0 { gcnt = 10001 }
+        else {
+            let after_q = cur.substring(q1 + 1, len(cur))
+            let q2 = after_q.index_of("\"")
+            if q2 < 0 { gcnt = 10001 }
+            else {
+                let name = after_q.substring(0, q2)
+                let rest = after_q.substring(q2 + 1, len(after_q))
+                let col = rest.index_of(":")
+                if col < 0 { gcnt = 10001 }
+                else {
+                    let tail = rest.substring(col + 1, len(rest))
+                    // value 는 숫자 — 다음 , 또는 } 까지
+                    let mut end = tail.index_of(",")
+                    let end2 = tail.index_of("}")
+                    if end < 0 { end = end2 }
+                    else if end2 > -1 && end2 < end { end = end2 }
+                    if end < 0 { gcnt = 10001 }
+                    else {
+                        let numstr = tail.substring(0, end).trim()
+                        let mut hv: i64 = 0
+                        try { hv = to_int(numstr) } catch e {}  // @allow-silent-catch
+                        _hm_keys.push(name)
+                        _hm_hits.push(hv)
+                        cur = tail.substring(end + 1, len(tail))
+                        // 다음 " 없으면 종료
+                        if cur.index_of("\"") < 0 { gcnt = 10001 }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  hot PROMOTE: top-K bucket 을 RAM dict 로 승격.
+//    K = min(cap_count, ceil(bucket_count · 0.1))
+//    cap_count 계산: HOT_CAP_MB 를 bucket 당 평균 바이트로 나눈 heuristic (또는 50 고정)
+// ═══════════════════════════════════════════════════════════
+fn _promote_top_k(all_buckets_count: i64) -> i64 {
+    // K = ceil(all_buckets · 0.1), cap 50
+    let mut kk: i64 = (all_buckets_count + 9) / 10
+    if kk > 50 { kk = 50 }
+    if kk < 1 { kk = 1 }
+
+    // heatmap 에서 top-K 선정 (selection-sort descending)
+    let n = len(_hm_keys)
+    if n < 1 { return 0 }
+    let mut skeys: [string] = []
+    let mut svals: [i64] = []
+    let mut i: i64 = 0
+    while i < n {
+        skeys.push(_hm_keys[i])
+        svals.push(_hm_hits[i])
+        i = i + 1
+    }
+    let mut pass: i64 = 0
+    let want = if kk < n { kk } else { n }
+    while pass < want {
+        let mut best = pass
+        let mut j: i64 = pass + 1
+        while j < n {
+            if svals[j] > svals[best] { best = j }
+            j = j + 1
+        }
+        if best != pass {
+            let tk = skeys[pass]; skeys[pass] = skeys[best]; skeys[best] = tk
+            let tv = svals[pass]; svals[pass] = svals[best]; svals[best] = tv
+        }
+        pass = pass + 1
+    }
+
+    // cap: HOT_CAP_MB
+    let cap_bytes: i64 = _hot_cap_mb() * 1024 * 1024
+    let mut promoted: i64 = 0
+    let mut k: i64 = 0
+    while k < want {
+        let bid = skeys[k]
+        // 이미 RAM 에 있으면 skip
+        if _hot_find(bid) > -1 {
+            k = k + 1
+            continue
+        }
+        // cold lookup → entries 획득 → RAM 얹기
+        let entries = _cold_lookup_by_prefix(_ATLAS_PATH, bid)
+        let joined = entries.join("\n")
+        let sz = len(joined)
+        if _hot_bytes + sz > cap_bytes {
+            // cap 초과 — 더 이상 승격 안 함
+            k = want
+        } else {
+            _hot_keys.push(bid)
+            _hot_joined.push(joined)
+            _hot_counts.push(len(entries))
+            _hot_bytes = _hot_bytes + sz
+            promoted = promoted + 1
+            k = k + 1
+        }
+    }
+    return promoted
+}
+
+// ═══════════════════════════════════════════════════════════
+//  WRAPPER LOOKUP API — hot 이면 RAM, else Y+awk
+//  반환 tuple 은 hexa 제한으로 parallel: count 만 필요 시 len(entries)
+// ═══════════════════════════════════════════════════════════
+fn hot_scan_by_prefix(atlas_path: string, prefix: string) -> [string] {
+    _counter_bump(prefix)
+    let hi = _hot_find(prefix)
+    if hi > -1 {
+        _sess_hits = _sess_hits + 1
+        let joined = _hot_joined[hi]
+        if joined == "" { return [] }
+        return joined.split("\n")
+    }
+    _sess_misses = _sess_misses + 1
+    return _cold_lookup_by_prefix(atlas_path, prefix)
+}
+
+// ═══════════════════════════════════════════════════════════
+//  deterministic seed hash — drill access pattern 생성용 (Zipf-like)
+//  FNV-1a 32-bit 변형 (blowup.hexa 의 text_seed_hash 참고, 단순화).
+// ═══════════════════════════════════════════════════════════
+fn _djb2(s: string) -> i64 {
+    let mut h: i64 = 5381
+    let mut i: i64 = 0
+    let n = len(s)
+    while i < n {
+        let c = char_code(s, i)
+        h = ((h * 33) + c) % 2147483647
+        i = i + 1
+    }
+    if h < 0 { h = 0 - h }
+    return h
+}
+
+// Zipf-like sampler — rank r 이 확률 1/(r+1) 로 선택 (log-skewed).
+// seed_hash 를 mix 해 순열 변화. 결정론 유지.
+fn _zipf_pick(bucket_ids: [string], seed_mix: i64) -> string {
+    let n = len(bucket_ids)
+    if n < 1 { return "" }
+    // 80-20 Zipf-like sampler: u ∈ [0, 10000), rank = n · (u/10000)^4
+    // u^4 skew → 80% of draws land in top ~15% of buckets (절대값 확인: u<5623 → r<n/10).
+    let u = seed_mix % 10000
+    // i64 overflow 회피 (u≤10^4 → u^2 ≤ 10^8, 다시 /10^4 = 10^4, 다시 * u = 10^8).
+    let u2 = (u * u) / 10000               // ≈ u^2/10^4  (0..10000)
+    let u4 = (u2 * u2) / 10000             // ≈ u^4/10^8  (0..10000)
+    let mut r = (n * u4) / 10000           // 0..n-1
+    if r < 0 { r = 0 - r }
+    if r > n - 1 { r = n - 1 }
+    return bucket_ids[r]
+}
+
+// ═══════════════════════════════════════════════════════════
+//  DRILL session — seed deterministic Zipf access pattern
+//    rounds 회 bucket lookup, round 10 마다 promote.
+//  반환: "hits,misses,promoted_last,duration_ms"
+// ═══════════════════════════════════════════════════════════
+fn drill_session(seed: string, rounds: i64, verbose: bool) -> string {
+    _ensure_index_fresh()
+    let buckets = _all_bucket_ids()
+    let nb = len(buckets)
+    if nb < 1 { return "0,0,0,0" }
+
+    _sess_hits = 0
+    _sess_misses = 0
+    let t0 = _ns_now()
+    let base = _djb2(seed)
+    let every = _promote_every()
+    let mut last_promoted: i64 = 0
+
+    let mut r: i64 = 0
+    while r < rounds {
+        // 결정론 access: seed_hash ⊕ round_idx 를 기반으로 Zipf pick
+        let mix = (base + (r * 2654435761)) % 2147483647
+        let bid = _zipf_pick(buckets, mix)
+        if bid != "" {
+            let _ = hot_scan_by_prefix(_ATLAS_PATH, bid)
+        }
+        r = r + 1
+        if r % every == 0 {
+            last_promoted = _promote_top_k(nb)
+            if verbose {
+                eprintln("[hot_shard] round=" + to_string(r)
+                    + " hits=" + to_string(_sess_hits)
+                    + " misses=" + to_string(_sess_misses)
+                    + " promoted=" + to_string(last_promoted)
+                    + " hot_bytes=" + to_string(_hot_bytes))
+            }
+        }
+    }
+    // 최종 flush promote (남은 window)
+    if rounds % every != 0 {
+        last_promoted = _promote_top_k(nb)
+    }
+    let t1 = _ns_now()
+    let dur_ms = (t1 - t0) / 1000000
+    _heatmap_save()
+    let mut parts: [string] = []
+    parts.push(to_string(_sess_hits))
+    parts.push(",")
+    parts.push(to_string(_sess_misses))
+    parts.push(",")
+    parts.push(to_string(last_promoted))
+    parts.push(",")
+    parts.push(to_string(dur_ms))
+    return parts.join("")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TOP-K report (현재 heatmap + RAM 점유)
+// ═══════════════════════════════════════════════════════════
+fn _report_top_k(k_show: i64) {
+    let n = len(_hm_keys)
+    if n < 1 {
+        println("  heatmap: (empty)")
+        return
+    }
+    // copy + sort desc
+    let mut sk: [string] = []
+    let mut sv: [i64] = []
+    let mut i: i64 = 0
+    while i < n {
+        sk.push(_hm_keys[i]); sv.push(_hm_hits[i])
+        i = i + 1
+    }
+    let mut p: i64 = 0
+    let want = if k_show < n { k_show } else { n }
+    while p < want {
+        let mut best = p
+        let mut j: i64 = p + 1
+        while j < n {
+            if sv[j] > sv[best] { best = j }
+            j = j + 1
+        }
+        if best != p {
+            let tk = sk[p]; sk[p] = sk[best]; sk[best] = tk
+            let tv = sv[p]; sv[p] = sv[best]; sv[best] = tv
+        }
+        p = p + 1
+    }
+    let mut k: i64 = 0
+    while k < want {
+        let tag = if _hot_find(sk[k]) > -1 { " [RAM]" } else { "" }
+        println("    " + to_string(k + 1) + ". " + sk[k]
+            + "  hits=" + to_string(sv[k]) + tag)
+        k = k + 1
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CLI
+// ═══════════════════════════════════════════════════════════
+_heatmap_load()
+
+let a = args()
+let mut cmd = "stats"
+if len(a) > 2 { cmd = a[2] }
+
+if cmd == "query" {
+    if len(a) < 4 {
+        println("usage: hexa shared/n6/atlas_hot_shard.hexa query <prefix>")
+        exit(1)  // @allow-silent-exit
+    }
+    let prefix = a[3]
+    _ensure_index_fresh()
+    let t0 = _ns_now()
+    let entries = hot_scan_by_prefix(_ATLAS_PATH, prefix)
+    let t1 = _ns_now()
+    let dur_us = (t1 - t0) / 1000
+    let hot = _hot_find(prefix) > -1
+    let mut meta: [string] = []
+    meta.push("NEXUS_ATLAS_HOT_QUERY {\"prefix\":\"")
+    meta.push(prefix)
+    meta.push("\",\"matches\":")
+    meta.push(to_string(len(entries)))
+    meta.push(",\"duration_us\":")
+    meta.push(to_string(dur_us))
+    meta.push(",\"hot\":")
+    meta.push(if hot { "true" } else { "false" })
+    meta.push("}")
+    eprintln(meta.join(""))
+    _heatmap_save()
+    println("# prefix=" + prefix + " matches=" + to_string(len(entries))
+        + " source=" + (if hot { "RAM" } else { "disk" }))
+    exit(0)
+} else if cmd == "drill" {
+    if len(a) < 4 {
+        println("usage: hexa shared/n6/atlas_hot_shard.hexa drill <rounds> [seed]")
+        exit(1)  // @allow-silent-exit
+    }
+    let mut rounds: i64 = 0
+    try { rounds = to_int(a[3]) } catch e {}  // @allow-silent-catch
+    if rounds < 1 { rounds = 1 }
+    let seed = if len(a) > 4 { a[4] } else { "default_seed_6" }
+    let res = drill_session(seed, rounds, true)
+    let parts = res.split(",")
+    println("atlas_hot_shard: drill OK — seed=" + seed
+        + " rounds=" + to_string(rounds)
+        + " hits=" + parts[0]
+        + " misses=" + parts[1]
+        + " last_promoted=" + parts[2]
+        + " dur_ms=" + parts[3])
+    exit(0)
+} else if cmd == "reset" {
+    try { let _ = exec("rm -f '" + _HEATMAP_PATH + "' 2>/dev/null") } catch e {}  // @allow-silent-catch @allow-bare-exec
+    println("atlas_hot_shard: reset — heatmap cleared: " + _HEATMAP_PATH)
+    exit(0)
+} else if cmd == "stats" {
+    _ensure_index_fresh()
+    println("atlas_hot_shard: stats")
+    println("  heatmap path: " + _HEATMAP_PATH
+        + (if _heatmap_persist() { " (persist ON)" } else { " (in-memory only)" }))
+    println("  hot_cap_mb:   " + to_string(_hot_cap_mb()))
+    println("  promote_every:" + to_string(_promote_every()))
+    let nb = len(_all_bucket_ids())
+    println("  total buckets (Y): " + to_string(nb))
+    println("  tracked in heatmap: " + to_string(len(_hm_keys)))
+    println("  RAM-promoted:       " + to_string(len(_hot_keys))
+        + "  (bytes=" + to_string(_hot_bytes) + ")")
+    println("  top 10:")
+    _report_top_k(10)
+    exit(0)
+} else if cmd == "verify" {
+    // 3 drill 연속 (동일 seed) — hit rate ramp + wall time
+    _ensure_index_fresh()
+    let seed = if len(a) > 3 { a[3] } else { "verify_seed_0" }
+    let mut rounds: i64 = 60
+    if len(a) > 4 { try { rounds = to_int(a[4]) } catch e {} }  // @allow-silent-catch
+    if rounds < 10 { rounds = 10 }
+
+    println("atlas_hot_shard: verify — 3 drill sessions (seed=" + seed
+        + ", rounds=" + to_string(rounds) + ")")
+    // reset heatmap for clean verification run
+    _hm_keys = []
+    _hm_hits = []
+    _hot_keys = []
+    _hot_joined = []
+    _hot_counts = []
+    _hot_bytes = 0
+
+    let mut sess_idx: i64 = 1
+    let mut trace: [string] = []
+    while sess_idx < 4 {
+        _sess_hits = 0
+        _sess_misses = 0
+        let res = drill_session(seed, rounds, false)
+        let parts = res.split(",")
+        let mut hr_bp: i64 = 0  // hit rate basis points (0-10000)
+        let total = to_int(parts[0]) + to_int(parts[1])
+        if total > 0 {
+            hr_bp = (to_int(parts[0]) * 10000) / total
+        }
+        let hr_pct_whole = hr_bp / 100
+        let hr_pct_frac = hr_bp % 100
+        let mut line: [string] = []
+        line.push("  session ")
+        line.push(to_string(sess_idx))
+        line.push(": hits=")
+        line.push(parts[0])
+        line.push(" misses=")
+        line.push(parts[1])
+        line.push(" hit_rate=")
+        line.push(to_string(hr_pct_whole))
+        line.push(".")
+        if hr_pct_frac < 10 { line.push("0") }
+        line.push(to_string(hr_pct_frac))
+        line.push("% dur_ms=")
+        line.push(parts[3])
+        line.push(" promoted_total=")
+        line.push(to_string(len(_hot_keys)))
+        let s = line.join("")
+        println(s)
+        trace.push(s)
+        sess_idx = sess_idx + 1
+    }
+    println("")
+    println("  heatmap top-10 snapshot:")
+    _report_top_k(10)
+    println("")
+    let mut s1b: [string] = []
+    s1b.push("  RAM-promoted buckets: ")
+    s1b.push(to_string(len(_hot_keys)))
+    s1b.push("  bytes=")
+    s1b.push(to_string(_hot_bytes))
+    s1b.push("  cap_mb=")
+    s1b.push(to_string(_hot_cap_mb()))
+    println(s1b.join(""))
+    _heatmap_save()
+    exit(0)
+} else {
+    println("usage: hexa shared/n6/atlas_hot_shard.hexa {query <prefix>|drill <rounds> [seed]|stats|reset|verify [seed] [rounds]}")
+    exit(1)  // @allow-silent-exit
+}

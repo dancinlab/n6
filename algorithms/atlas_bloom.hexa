@@ -1,0 +1,741 @@
+// ═══════════════════════════════════════════════════════════
+// atlas_bloom.hexa — atlas.n6 domain-prefix bloom filter (opt-in)
+//
+// 배경:
+//   Y agent bucket index (commit 19cd7076, shared/n6/atlas_scan_opt.hexa) 는
+//   atlas.n6 entry 를 prefix bucket 으로 분할해 O(1+k) lookup.
+//   그러나 bucket miss 경로에서도 index JSON load + bucket block 탐색이 필요.
+//   bloom filter 를 얹어 not-in-set prefix 를 O(1) 로 reject.
+//
+// 설계:
+//   · bitmap m = 111,000 bits ≈ 13,875 bytes (9624 entry × 11.5 bits/entry)
+//   · K = 7 hash functions — FNV-1 / djb2 double hashing
+//   · insert set = distinct prefix (≈112) ∪ distinct full domain (≈113)
+//   · target fp = 1% (9624-sized 기준; 실 insert 는 ~225 → 실측 fp ≪ 1%)
+//   · atlas.n6 은 read-only 준수
+//
+// 바이너리 포맷 (little-endian):
+//   offset 0..7   magic "N6BLOOM\0"     (8 B)
+//   offset 8..11  version u32 = 1       (4 B)
+//   offset 12..15 bit_count u32         (4 B)
+//   offset 16..19 byte_count u32        (4 B)
+//   offset 20..23 hash_count u32        (4 B)
+//   offset 24..27 insert_count u32      (4 B)
+//   offset 28..35 source_mtime u64      (8 B)
+//   offset 36..43 build_unix_ms u64     (8 B)
+//   offset 44..75 sha256_bitmap         (32 B)
+//   offset 76..   bitmap                (byte_count B, LSB-first in byte)
+//   total header = 76 bytes
+//
+// 사이드카 JSON: <bloom_path>.meta.json
+//
+// 호출 계약 (Y rebuild 와 동일 trigger):
+//   hexa shared/n6/atlas_bloom.hexa build
+//     → /tmp/atlas_bloom.bin + /tmp/atlas_bloom.bin.meta.json
+//   hexa shared/n6/atlas_bloom.hexa check <token>
+//   hexa shared/n6/atlas_bloom.hexa verify <N>
+//   hexa shared/n6/atlas_bloom.hexa stats
+//
+// hexa-lang 비트연산 빈약 (XOR/AND 미지원) → 해시/bitmap 은 awk/shell 로 외부
+// 생성. hexa 는 binary read + meta JSON 소비만 담당.
+//
+// 편집 금지: atlas.n6 본체, blowup/compose, Y 의 atlas_scan_opt.hexa
+// 규칙: hexa `>=`/`<=` 금지 — 본 파일은 < / > 만 사용
+// ═══════════════════════════════════════════════════════════
+
+let _ATLAS_PATH    = "shared/n6/atlas.n6"
+let _BLOOM_PATH    = "/tmp/atlas_bloom.bin"
+let _META_PATH     = "/tmp/atlas_bloom.bin.meta.json"
+let _BIT_COUNT_DEFAULT: i64 = 111000
+let _HASH_COUNT_DEFAULT: i64 = 7
+
+// ─── util: last numeric line (stat BSD/GNU 양립) ───
+fn _last_numeric_line(raw: string) -> string {
+    let lines = raw.split("\n")
+    let mut i: i64 = len(lines) - 1
+    while i > -1 {
+        let t = lines[i].trim()
+        if t != "" {
+            let mut all_digit = true
+            let mut j: i64 = 0
+            while j < len(t) {
+                let c = t.substring(j, j + 1)
+                if c < "0" { all_digit = false; j = len(t) }
+                else if c > "9" { all_digit = false; j = len(t) }
+                j = j + 1
+            }
+            if all_digit { return t }
+        }
+        i = i - 1
+    }
+    return ""
+}
+
+fn _mtime_of(path: string) -> string {
+    let mut r = ""
+    try {
+        let raw = to_string(exec("stat -c '%Y' '" + path + "' 2>/dev/null; stat -f '%m' '" + path + "' 2>/dev/null"))
+        r = _last_numeric_line(raw)
+    } catch e {}  // @allow-silent-catch
+    return r
+}
+
+fn _ns_now() -> i64 {
+    // macOS-correct (date-percent-3n-macos-bypass-audit 2026-04-27): see atlas_query.hexa fix.
+    let mut r: i64 = 0
+    let raw = to_string(exec("date +%s%N 2>/dev/null")).trim()  // @allow-bare-exec
+    if raw.len() > 0 && raw.contains("N") == false {
+        try { r = to_int(raw) } catch e {}  // @allow-silent-catch
+    }
+    if r <= 0 {
+        let s2 = to_string(exec("python3 -c 'import time;print(time.time_ns())' 2>/dev/null")).trim()  // @allow-bare-exec
+        try { r = to_int(s2) } catch e2 {}  // @allow-silent-catch
+    }
+    if r <= 0 {
+        let s3 = to_string(exec("date +%s")).trim()  // @allow-bare-exec
+        try { let sec = to_int(s3); r = sec * 1000000000 } catch e3 {}  // @allow-silent-catch
+    }
+    return r
+}
+
+fn _json_int_g(raw: string, key: string) -> i64 {
+    let mut v: i64 = 0
+    let marker = "\"" + key + "\":"
+    let idx = raw.index_of(marker)
+    if idx > -1 {
+        let after = raw.substring(idx + len(marker), len(raw))
+        let mut end = after.index_of(",")
+        let end2 = after.index_of("}")
+        let end3 = after.index_of("\n")
+        if end < 0 { end = end2 }
+        else if end2 > -1 && end2 < end { end = end2 }
+        if end < 0 { end = end3 }
+        else if end3 > -1 && end3 < end { end = end3 }
+        if end > 0 {
+            try { v = to_int(after.substring(0, end).trim()) } catch e {}  // @allow-silent-catch
+        }
+    }
+    return v
+}
+
+fn _json_str_g(raw: string, key: string) -> string {
+    let marker = "\"" + key + "\":\""
+    let idx = raw.index_of(marker)
+    if idx < 0 { return "" }
+    let start = idx + len(marker)
+    let after = raw.substring(start, len(raw))
+    let end = after.index_of("\"")
+    if end < 0 { return "" }
+    return after.substring(0, end)
+}
+
+// ═══════════════════════════════════════════════════════════
+// _build_awk_source(bit_count, hash_count) -> awk script
+//
+//   awk 프로그램 생성. atlas.n6 1-pass 로 prefix/domain 추출 → bitmap 세팅.
+//   FNV-1 (not 1a; AWK XOR 미지원 → add/mul 변형) + djb2 double hashing.
+//   bitmap 은 8-bit 단위 정수 배열 byte[0..B-1]. LSB-first.
+//   stdout: bitmap hex (B*2 char)
+//   stderr: "#META\t<ins>\t<dom_n>\t<pfx_n>\t<B>\t<set_bits>"
+// ═══════════════════════════════════════════════════════════
+fn _build_awk_source(bit_count: i64, hash_count: i64) -> string {
+    let M = to_string(bit_count)
+    let K = to_string(hash_count)
+    let mut p: [string] = []
+    p.push("BEGIN{FS=\"\"; M=")
+    p.push(M)
+    p.push("; K=")
+    p.push(K)
+    p.push("; B=int((M+7)/8); for(b=0;b<B;b++) byte[b]=0; ")
+    p.push("for(i=0;i<8;i++) bit2[i]=2^i; ")
+    p.push("for(i=0;i<256;i++){ c=sprintf(\"%c\",i); ord[c]=i } ")
+    p.push("ins=0; dom_n=0; pfx_n=0 } ")
+    // FNV-1 32bit (XOR-less) : h = (h + c) * 16777619 mod 2^32
+    p.push("function fnv1(s,   i,h,n){ h=2166136261; n=length(s); ")
+    p.push("  for(i=1;i<=n;i++){ h=((h+ord[substr(s,i,1)])*16777619)%4294967296 } return h } ")
+    // djb2 : h = h*33 + c
+    p.push("function djb2(s,   i,h,n){ h=5381; n=length(s); ")
+    p.push("  for(i=1;i<=n;i++){ h=(h*33+ord[substr(s,i,1)])%4294967296 } return h } ")
+    // set k bit positions via double hashing
+    p.push("function bset(s,   h1,h2,i,idx,bo,bi,cur,bit,has){ h1=fnv1(s); h2=djb2(s); ")
+    p.push("  if(h2==0) h2=1; ")
+    p.push("  for(i=0;i<K;i++){ idx=(h1+i*h2)%M; if(idx<0) idx+=M; ")
+    p.push("    bo=int(idx/8); bi=idx%8; cur=byte[bo]; bit=bit2[bi]; ")
+    p.push("    has=int(cur/bit)%2; if(has==0) byte[bo]=cur+bit } } ")
+    // atlas line rule — Y 의 bucket_domain_prefix 와 동일
+    p.push("{ line=$0; s=line; sub(/^[ \\t]+/,\"\",s); sub(/[ \\t]+$/,\"\",s); ")
+    p.push("  if(s==\"\"||substr(s,1,1)==\"#\"||substr(s,1,2)==\"//\") next; ")
+    p.push("  if(substr(s,1,1)!=\"@\") next; ")
+    p.push("  ci=index(s,\"::\"); if(ci==0) next; ")
+    p.push("  rest=substr(s,ci+2); sub(/^[ \\t]+/,\"\",rest); if(rest==\"\") next; ")
+    p.push("  sp=index(rest,\" \"); tb=index(rest,\"\\t\"); dom=rest; ")
+    p.push("  if(sp>0 && (tb==0||sp<tb)) dom=substr(rest,1,sp-1); ")
+    p.push("  else if(tb>0) dom=substr(rest,1,tb-1); ")
+    p.push("  us=index(dom,\"_\"); if(us>0) pfx=substr(dom,1,us-1); else pfx=dom; ")
+    p.push("  if(pfx==\"\") next; ins++; ")
+    p.push("  if(!(dom in D)){ D[dom]=1; bset(dom); dom_n++ } ")
+    p.push("  if(!(pfx in P)){ P[pfx]=1; bset(pfx); pfx_n++ } } ")
+    // END: popcount + dump hex
+    p.push("END{ sb=0; for(b=0;b<B;b++){ v=byte[b]; while(v>0){ if(int(v)%2==1) sb++; v=int(v/2) } } ")
+    p.push("  printf \"#META\\t%d\\t%d\\t%d\\t%d\\t%d\\n\", ins, dom_n, pfx_n, B, sb > \"/dev/stderr\"; ")
+    p.push("  for(b=0;b<B;b++) printf \"%02x\", byte[b]; printf \"\\n\" }")
+    return p.join("")
+}
+
+// ═══════════════════════════════════════════════════════════
+// build(atlas_path, bit_count, hash_count) -> i64 (inserts)
+//
+//   1. atlas.n6 1-pass scan via awk → bitmap hex + meta (stderr)
+//   2. hex → binary via xxd -r -p
+//   3. header (76B) prepend via printf %b stream
+//   4. sha256 of bitmap (sha256sum)
+//   5. meta JSON sidecar
+// ═══════════════════════════════════════════════════════════
+fn build(atlas_path: string, bit_count: i64, hash_count: i64) -> i64 {
+    let t0 = _ns_now()
+    if !file_exists(atlas_path) {
+        eprintln("atlas_bloom: atlas not found: " + atlas_path)
+        return 0
+    }
+    let awk_src = _build_awk_source(bit_count, hash_count)
+    // 실행: awk … atlas > hex_file 2> stats_file
+    let hex_tmp = "/tmp/atlas_bloom.hex.tmp"
+    let stats_tmp = "/tmp/atlas_bloom.stats.tmp"
+    // awk src 를 파일에 써서 argv 폭주/escape 지옥 회피
+    let awk_file = "/tmp/atlas_bloom.awk"
+    try { write_file(awk_file, awk_src) } catch e {
+        eprintln("atlas_bloom: awk_file write failed"); return 0  // @allow-silent-catch
+    }
+    let mut rc = ""
+    try {
+        rc = to_string(exec("awk -f '" + awk_file + "' '" + atlas_path + "' > '" + hex_tmp + "' 2> '" + stats_tmp + "'"))
+    } catch e {  // @allow-silent-catch
+        eprintln("atlas_bloom: awk exec failed"); return 0
+    }
+    // stats 읽기 — 형식: "#META\t<ins>\t<dom_n>\t<pfx_n>\t<B>\t<set_bits>"
+    if !file_exists(stats_tmp) {
+        eprintln("atlas_bloom: stats missing"); return 0
+    }
+    let stats_raw = read_file(stats_tmp).trim()
+    let parts = stats_raw.split("\t")
+    if len(parts) < 6 {
+        eprintln("atlas_bloom: stats malformed: " + stats_raw); return 0
+    }
+    let mut inserts: i64 = 0
+    let mut dom_n: i64 = 0
+    let mut pfx_n: i64 = 0
+    let mut byte_count: i64 = 0
+    let mut set_bits: i64 = 0
+    try { inserts = to_int(parts[1].trim()) } catch e {}     // @allow-silent-catch
+    try { dom_n = to_int(parts[2].trim()) } catch e {}       // @allow-silent-catch
+    try { pfx_n = to_int(parts[3].trim()) } catch e {}       // @allow-silent-catch
+    try { byte_count = to_int(parts[4].trim()) } catch e {}  // @allow-silent-catch
+    try { set_bits = to_int(parts[5].trim()) } catch e {}    // @allow-silent-catch
+    // hex → binary
+    let bitmap_tmp = "/tmp/atlas_bloom.bitmap.tmp"
+    try {
+        let _ = to_string(exec("xxd -r -p '" + hex_tmp + "' > '" + bitmap_tmp + "'"))
+    } catch e {  // @allow-silent-catch
+        eprintln("atlas_bloom: xxd failed"); return 0
+    }
+    // sha256
+    let mut sha256 = ""
+    try {
+        let sraw = to_string(exec("sha256sum '" + bitmap_tmp + "' | awk '{print $1}'")).trim()
+        sha256 = sraw
+    } catch e {}  // @allow-silent-catch
+    if len(sha256) < 64 {
+        // macOS fallback
+        try {
+            let sraw = to_string(exec("shasum -a 256 '" + bitmap_tmp + "' | awk '{print $1}'")).trim()
+            sha256 = sraw
+        } catch e {}  // @allow-silent-catch
+    }
+    let src_mtime = _mtime_of(atlas_path)
+    let t1 = _ns_now()
+    let dur_ms = (t1 - t0) / 1000000
+    let build_unix_ms = _ns_now() / 1000000
+
+    // 헤더 작성 — hex 문자열로 만들어 xxd -r -p 로 바이너리 prepend.
+    //  magic "N6BLOOM\0" = 4e 36 42 4c 4f 4f 4d 00
+    //  나머지 u32/u64 는 LE hex 로 직접 포맷
+    let header_hex = _header_hex(bit_count, byte_count, hash_count, inserts, src_mtime, build_unix_ms, sha256)
+    let header_hex_file = "/tmp/atlas_bloom.header.hex"
+    try { write_file(header_hex_file, header_hex) } catch e {
+        eprintln("atlas_bloom: header hex write failed"); return 0  // @allow-silent-catch
+    }
+    let header_bin = "/tmp/atlas_bloom.header.bin"
+    try {
+        let _ = to_string(exec("xxd -r -p '" + header_hex_file + "' > '" + header_bin + "'"))
+    } catch e {  // @allow-silent-catch
+        eprintln("atlas_bloom: header xxd failed"); return 0
+    }
+    // 최종 파일 = header ++ bitmap
+    try {
+        let _ = to_string(exec("cat '" + header_bin + "' '" + bitmap_tmp + "' > '" + _BLOOM_PATH + "'"))
+    } catch e {  // @allow-silent-catch
+        eprintln("atlas_bloom: cat concat failed"); return 0
+    }
+    // 사이드카 메타 JSON
+    let fill_ratio = (set_bits * 1000000) / bit_count  // ppm (integer math)
+    // 이론 FP = (set_bits/bit_count)^K — 정수로 근사 어려움 → awk 로 계산
+    let mut fp_str = "0"
+    try {
+        let fpa = to_string(exec("awk 'BEGIN{p=" + to_string(set_bits) + "/" + to_string(bit_count)
+            + "; k=" + to_string(hash_count) + "; printf \"%.8f\", p^k}'")).trim()
+        fp_str = fpa
+    } catch e {}  // @allow-silent-catch
+    let mut mp: [string] = []
+    mp.push("{\"schema\":1,\"source\":\"")
+    mp.push(atlas_path)
+    mp.push("\",\"source_mtime\":")
+    mp.push(if src_mtime == "" { "0" } else { src_mtime })
+    mp.push(",\"bloom_path\":\"")
+    mp.push(_BLOOM_PATH)
+    mp.push("\",\"bit_count\":")
+    mp.push(to_string(bit_count))
+    mp.push(",\"byte_count\":")
+    mp.push(to_string(byte_count))
+    mp.push(",\"hash_count\":")
+    mp.push(to_string(hash_count))
+    mp.push(",\"insert_count\":")
+    mp.push(to_string(inserts))
+    mp.push(",\"distinct_domains\":")
+    mp.push(to_string(dom_n))
+    mp.push(",\"distinct_prefixes\":")
+    mp.push(to_string(pfx_n))
+    mp.push(",\"set_bits\":")
+    mp.push(to_string(set_bits))
+    mp.push(",\"fill_ratio_ppm\":")
+    mp.push(to_string(fill_ratio))
+    mp.push(",\"theoretical_fp\":")
+    mp.push(fp_str)
+    mp.push(",\"duration_ms\":")
+    mp.push(to_string(dur_ms))
+    mp.push(",\"build_unix_ms\":")
+    mp.push(to_string(build_unix_ms))
+    mp.push(",\"sha256_bitmap\":\"")
+    mp.push(sha256)
+    mp.push("\"}\n")
+    try { write_file(_META_PATH, mp.join("")) } catch e {
+        eprintln("atlas_bloom: meta write failed")  // @allow-silent-catch
+    }
+    // cleanup
+    try { let _ = to_string(exec("rm -f '" + hex_tmp + "' '" + stats_tmp + "' '" + awk_file
+        + "' '" + header_hex_file + "' '" + header_bin + "' '" + bitmap_tmp + "'")) } catch e {}  // @allow-silent-catch
+
+    let mut log: [string] = []
+    log.push("NEXUS_ATLAS_BLOOM_BUILD {\"inserts\":")
+    log.push(to_string(inserts))
+    log.push(",\"prefixes\":")
+    log.push(to_string(pfx_n))
+    log.push(",\"domains\":")
+    log.push(to_string(dom_n))
+    log.push(",\"bits\":")
+    log.push(to_string(bit_count))
+    log.push(",\"hashes\":")
+    log.push(to_string(hash_count))
+    log.push(",\"set_bits\":")
+    log.push(to_string(set_bits))
+    log.push(",\"duration_ms\":")
+    log.push(to_string(dur_ms))
+    log.push(",\"bloom_path\":\"")
+    log.push(_BLOOM_PATH)
+    log.push("\"}")
+    eprintln(log.join(""))
+    return inserts
+}
+
+// ═══════════════════════════════════════════════════════════
+// _header_hex — 76-byte header 를 hex 문자열로 포맷
+//   magic(8) ++ ver(4) ++ bits(4) ++ bytes(4) ++ hashes(4) ++ inserts(4)
+//     ++ src_mtime(8) ++ build_ms(8) ++ sha256(32) = 76
+// ═══════════════════════════════════════════════════════════
+fn _hex_u32_le(v: i64) -> string {
+    // Little-endian: b0 b1 b2 b3
+    let b0 = v % 256
+    let v1 = v / 256
+    let b1 = v1 % 256
+    let v2 = v1 / 256
+    let b2 = v2 % 256
+    let v3 = v2 / 256
+    let b3 = v3 % 256
+    return _hex2(b0) + _hex2(b1) + _hex2(b2) + _hex2(b3)
+}
+
+fn _hex_u64_le(v: i64) -> string {
+    // 상위 32bit + 하위 32bit
+    // hexa i64 는 signed 64 → positive mtime 은 안전
+    let lo = v % 4294967296
+    let hi = v / 4294967296
+    return _hex_u32_le(lo) + _hex_u32_le(hi)
+}
+
+fn _hex2(b: i64) -> string {
+    let hi = b / 16
+    let lo = b % 16
+    return _hexd(hi) + _hexd(lo)
+}
+
+fn _hexd(n: i64) -> string {
+    if n < 10 { return to_string(n) }
+    if n == 10 { return "a" }
+    if n == 11 { return "b" }
+    if n == 12 { return "c" }
+    if n == 13 { return "d" }
+    if n == 14 { return "e" }
+    return "f"
+}
+
+fn _header_hex(bit_count: i64, byte_count: i64, hash_count: i64, inserts: i64,
+               src_mtime_s: string, build_ms: i64, sha256: string) -> string {
+    // magic "N6BLOOM\0" = 4e 36 42 4c 4f 4f 4d 00
+    let magic = "4e36424c4f4f4d00"
+    let ver = _hex_u32_le(1)
+    let bits_hex = _hex_u32_le(bit_count)
+    let bytes_hex = _hex_u32_le(byte_count)
+    let hashes_hex = _hex_u32_le(hash_count)
+    let ins_hex = _hex_u32_le(inserts)
+    let mut mt: i64 = 0
+    try { mt = to_int(src_mtime_s) } catch e {}  // @allow-silent-catch
+    let mt_hex = _hex_u64_le(mt)
+    let bm_hex = _hex_u64_le(build_ms)
+    // sha256 is already hex string, pad/truncate to 64 hex chars
+    let mut s = sha256
+    if len(s) > 64 { s = s.substring(0, 64) }
+    while len(s) < 64 { s = s + "0" }
+    return magic + ver + bits_hex + bytes_hex + hashes_hex + ins_hex + mt_hex + bm_hex + s
+}
+
+// ═══════════════════════════════════════════════════════════
+// load_meta() -> string (raw JSON or "")
+//   stat mtime 비교로 staleness 판정. stale → "" (rebuild 필요).
+// ═══════════════════════════════════════════════════════════
+fn load_meta(atlas_path: string) -> string {
+    if !file_exists(_META_PATH) { return "" }
+    if !file_exists(_BLOOM_PATH) { return "" }
+    let mut raw = ""
+    try { raw = read_file(_META_PATH).trim() } catch e { return "" }  // @allow-silent-catch
+    if raw == "" { return "" }
+    let cached = to_string(_json_int_g(raw, "source_mtime"))
+    let cur = _mtime_of(atlas_path)
+    if cur == "" { return "" }
+    if cached != cur { return "" }  // stale
+    return raw
+}
+
+// ═══════════════════════════════════════════════════════════
+// check(token) -> bool
+//   bloom.check(token). hexa 의 bit 연산 부재 → awk 로 위임 (per-call exec).
+//   verify() 는 N 개 토큰을 1 호출로 처리해 overhead 상각.
+// ═══════════════════════════════════════════════════════════
+fn check(token: string) -> bool {
+    if !file_exists(_BLOOM_PATH) { return true }   // no bloom → conservative allow
+    if !file_exists(_META_PATH) { return true }
+    // 단건 check 는 ad-hoc awk — atlas 터치 없음.
+    let awk_expr = _check_awk(1)
+    let probe_file = "/tmp/atlas_bloom.probe.tmp"
+    try { write_file(probe_file, token + "\n") } catch e { return true }  // @allow-silent-catch
+    let mut out = ""
+    try {
+        out = to_string(exec("awk -v BLOOM='" + _BLOOM_PATH + "' -v META='" + _META_PATH + "' '"
+            + awk_expr + "' '" + probe_file + "'")).trim()
+    } catch e { return true }  // @allow-silent-catch
+    // 기대 출력: "<token>\t0" (reject) or "<token>\t1" (possible)
+    if out.index_of("\t0") > -1 { return false }
+    return true
+}
+
+// ═══════════════════════════════════════════════════════════
+// verify(n) -> {fp, tp_ref}
+//   · N 개 pseudo-random prefix 생성 → bloom check
+//   · ground-truth: bucket index JSON 에 해당 prefix key 존재 여부
+//   · bloom=reject & gt=absent → true-negative (reject_pct)
+//   · bloom=accept & gt=absent → false-positive
+// ═══════════════════════════════════════════════════════════
+fn verify(n: i64) -> i64 {
+    if !file_exists(_BLOOM_PATH) {
+        eprintln("atlas_bloom: bloom missing — run build first"); return 0
+    }
+    let bucket_idx = "/tmp/atlas_bucket_idx.json"
+    let mut gt_raw = ""
+    if file_exists(bucket_idx) {
+        try { gt_raw = read_file(bucket_idx) } catch e {}  // @allow-silent-catch
+    }
+    // 1. N 개 토큰 생성 — 절반은 실제 prefix (bucket index 에서), 절반은 random noise
+    let mut probes: [string] = []
+    let mut gt_present: [i64] = []
+    // 실제 prefix 추출 — bucket 섹션에서 "name":[...] 의 name 수집
+    let mut real_pfx: [string] = []
+    if gt_raw != "" {
+        let bstart = gt_raw.index_of("\"buckets\":{")
+        if bstart > -1 {
+            let bafter = gt_raw.substring(bstart + 11, len(gt_raw))
+            let mut cur = bafter
+            let mut g: i64 = 0
+            while g < 1000 {
+                g = g + 1
+                let q1 = cur.index_of("\"")
+                if q1 < 0 { g = 1001 }
+                else {
+                    let after_q = cur.substring(q1 + 1, len(cur))
+                    let q2 = after_q.index_of("\"")
+                    if q2 < 0 { g = 1001 }
+                    else {
+                        let name = after_q.substring(0, q2)
+                        real_pfx.push(name)
+                        let rest = after_q.substring(q2 + 1, len(after_q))
+                        let rb = rest.index_of("]")
+                        if rb < 0 { g = 1001 }
+                        else {
+                            cur = rest.substring(rb + 1, len(rest))
+                            if cur.index_of("\"") < 0 { g = 1001 }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let npfx = len(real_pfx)
+    // rand seed — use nanoseconds
+    let seed = _ns_now()
+    let mut rs = seed
+    let mut i: i64 = 0
+    while i < n {
+        // linear congruential
+        rs = (rs * 1103515245 + 12345) % 2147483647
+        if rs < 0 { rs = 0 - rs }
+        let mode = rs % 2
+        if mode == 0 && npfx > 0 {
+            // 실제 prefix (present)
+            let k = rs % npfx
+            probes.push(real_pfx[k])
+            gt_present.push(1)
+        } else {
+            // noise prefix
+            let alpha = "abcdefghijklmnopqrstuvwxyz"
+            let lgen = (rs % 6) + 3  // length 3..8
+            let mut s = ""
+            let mut j: i64 = 0
+            let mut rs2 = rs
+            while j < lgen {
+                rs2 = (rs2 * 1103515245 + 12345) % 2147483647
+                if rs2 < 0 { rs2 = 0 - rs2 }
+                let idx = rs2 % 26
+                s = s + alpha.substring(idx, idx + 1)
+                j = j + 1
+            }
+            // 실제 prefix 와 충돌하면 present 로 표시
+            let mut is_present: i64 = 0
+            let mut m: i64 = 0
+            while m < npfx {
+                if real_pfx[m] == s { is_present = 1; m = npfx }
+                m = m + 1
+            }
+            probes.push(s)
+            gt_present.push(is_present)
+        }
+        i = i + 1
+    }
+    // 2. probes 를 파일로 → awk 일괄 체크
+    let probe_file = "/tmp/atlas_bloom.probes.tmp"
+    let mut buf: [string] = []
+    let nprobes = len(probes)
+    let mut pi: i64 = 0
+    while pi < nprobes {
+        buf.push(probes[pi])
+        buf.push("\n")
+        pi = pi + 1
+    }
+    try { write_file(probe_file, buf.join("")) } catch e {
+        eprintln("atlas_bloom: probe file write failed"); return 0  // @allow-silent-catch
+    }
+    let t0 = _ns_now()
+    let awk_expr = _check_awk(1)
+    let mut check_out = ""
+    try {
+        check_out = to_string(exec("awk -v BLOOM='" + _BLOOM_PATH + "' -v META='" + _META_PATH + "' '"
+            + awk_expr + "' '" + probe_file + "'"))
+    } catch e { eprintln("atlas_bloom: check exec failed"); return 0 }  // @allow-silent-catch
+    let t1 = _ns_now()
+    let check_ms = (t1 - t0) / 1000000
+    // 3. 결과 파싱 — 각 line "<token>\t<0|1>"
+    let lines = check_out.split("\n")
+    let mut bloom_reject: i64 = 0
+    let mut false_positive: i64 = 0
+    let mut true_positive: i64 = 0
+    let mut true_negative: i64 = 0
+    let mut false_negative: i64 = 0
+    let nl = len(lines)
+    let mut li: i64 = 0
+    let mut probe_idx: i64 = 0
+    while li < nl {
+        let row = lines[li].trim()
+        if row == "" { li = li + 1; continue }
+        let tab = row.index_of("\t")
+        if tab < 0 { li = li + 1; continue }
+        let bit = row.substring(tab + 1, len(row)).trim()
+        let in_bloom = if bit == "1" { 1 } else { 0 }
+        let gt = if probe_idx < len(gt_present) { gt_present[probe_idx] } else { 0 }
+        if in_bloom == 0 { bloom_reject = bloom_reject + 1 }
+        if in_bloom == 1 && gt == 1 { true_positive = true_positive + 1 }
+        if in_bloom == 1 && gt == 0 { false_positive = false_positive + 1 }
+        if in_bloom == 0 && gt == 0 { true_negative = true_negative + 1 }
+        if in_bloom == 0 && gt == 1 { false_negative = false_negative + 1 }
+        probe_idx = probe_idx + 1
+        li = li + 1
+    }
+    let total = probe_idx
+    let absent = true_negative + false_positive
+    // 퍼센트 — integer basis point
+    let reject_bp = if total > 0 { (bloom_reject * 10000) / total } else { 0 }
+    let fp_bp = if absent > 0 { (false_positive * 10000) / absent } else { 0 }
+    // 출력 — JSON 라인
+    let mut r: [string] = []
+    r.push("NEXUS_ATLAS_BLOOM_VERIFY {\"total\":")
+    r.push(to_string(total))
+    r.push(",\"bloom_reject\":")
+    r.push(to_string(bloom_reject))
+    r.push(",\"true_positive\":")
+    r.push(to_string(true_positive))
+    r.push(",\"false_positive\":")
+    r.push(to_string(false_positive))
+    r.push(",\"true_negative\":")
+    r.push(to_string(true_negative))
+    r.push(",\"false_negative\":")
+    r.push(to_string(false_negative))
+    r.push(",\"reject_bp\":")
+    r.push(to_string(reject_bp))
+    r.push(",\"fp_bp\":")
+    r.push(to_string(fp_bp))
+    r.push(",\"check_ms\":")
+    r.push(to_string(check_ms))
+    r.push("}")
+    println(r.join(""))
+    if false_negative > 0 {
+        eprintln("atlas_bloom: WARNING false_negative=" + to_string(false_negative)
+            + " — bloom invariant violated (check build path)")
+    }
+    try { let _ = to_string(exec("rm -f '" + probe_file + "'")) } catch e {}  // @allow-silent-catch
+    return total
+}
+
+// ═══════════════════════════════════════════════════════════
+// _check_awk(mode) -> awk source
+//   stdin 으로 토큰 라인 받아 bloom 비트맵 조회. bit_count/hash_count 는 META 에서 읽음.
+//   출력: "<token>\t<0|1>"
+//   0 = reject (not in set), 1 = possibly present
+// ═══════════════════════════════════════════════════════════
+fn _check_awk(_mode: i64) -> string {
+    let mut p: [string] = []
+    // BEGIN: META 파싱 + bitmap 바이트 읽기
+    p.push("BEGIN{ ")
+    // META JSON 에서 bit_count, hash_count 추출 — 간단 정규식
+    p.push("  cmd = \"cat \" META; ")
+    p.push("  mj = \"\"; while ((cmd | getline l) > 0) mj = mj l; close(cmd); ")
+    p.push("  M = 0; K = 0; ")
+    p.push("  if (match(mj, /\"bit_count\":[0-9]+/)) { s=substr(mj,RSTART,RLENGTH); sub(/\"bit_count\":/,\"\",s); M=s+0 } ")
+    p.push("  if (match(mj, /\"hash_count\":[0-9]+/)) { s=substr(mj,RSTART,RLENGTH); sub(/\"hash_count\":/,\"\",s); K=s+0 } ")
+    p.push("  if (M==0 || K==0) { print \"atlas_bloom check: meta invalid\" > \"/dev/stderr\"; exit 1 } ")
+    // bitmap 을 xxd -p -s 76 로 hex dump — 헤더 76B 건너뛰고 읽음
+    // mawk 는 strtonum() 미제공 → hex digit table 사용
+    p.push("  hx[\"0\"]=0; hx[\"1\"]=1; hx[\"2\"]=2; hx[\"3\"]=3; hx[\"4\"]=4; ")
+    p.push("  hx[\"5\"]=5; hx[\"6\"]=6; hx[\"7\"]=7; hx[\"8\"]=8; hx[\"9\"]=9; ")
+    p.push("  hx[\"a\"]=10; hx[\"b\"]=11; hx[\"c\"]=12; hx[\"d\"]=13; hx[\"e\"]=14; hx[\"f\"]=15; ")
+    p.push("  hx[\"A\"]=10; hx[\"B\"]=11; hx[\"C\"]=12; hx[\"D\"]=13; hx[\"E\"]=14; hx[\"F\"]=15; ")
+    p.push("  cmd2 = \"xxd -p -c 1 -s 76 \" BLOOM; ")
+    p.push("  b = 0; while ((cmd2 | getline h) > 0) { ")
+    p.push("    c1 = substr(h,1,1); c2 = substr(h,2,1); byte[b] = hx[c1]*16 + hx[c2]; b++ } close(cmd2); ")
+    p.push("  B = b; ")
+    p.push("  for (i=0;i<8;i++) bit2[i]=2^i; ")
+    p.push("  for (i=0;i<256;i++) { c=sprintf(\"%c\",i); ord[c]=i } ")
+    p.push("} ")
+    // FNV-1 / djb2 — build 와 완전 동일
+    p.push("function fnv1(s,   i,h,n){ h=2166136261; n=length(s); ")
+    p.push("  for(i=1;i<=n;i++){ h=((h+ord[substr(s,i,1)])*16777619)%4294967296 } return h } ")
+    p.push("function djb2(s,   i,h,n){ h=5381; n=length(s); ")
+    p.push("  for(i=1;i<=n;i++){ h=(h*33+ord[substr(s,i,1)])%4294967296 } return h } ")
+    p.push("function bcheck(s,   h1,h2,i,idx,bo,bi,cur,bit,has){ h1=fnv1(s); h2=djb2(s); ")
+    p.push("  if(h2==0) h2=1; ")
+    p.push("  for(i=0;i<K;i++){ idx=(h1+i*h2)%M; if(idx<0) idx+=M; ")
+    p.push("    bo=int(idx/8); bi=idx%8; cur=byte[bo]; bit=bit2[bi]; ")
+    p.push("    has=int(cur/bit)%2; if(has==0) return 0 } return 1 } ")
+    p.push("{ t=$0; sub(/[\\r\\n]+$/,\"\",t); if(t==\"\") next; printf \"%s\\t%d\\n\", t, bcheck(t) }")
+    return p.join("")
+}
+
+// ═══════════════════════════════════════════════════════════
+// stats() — meta JSON 요약 출력
+// ═══════════════════════════════════════════════════════════
+fn stats() -> i64 {
+    let raw = load_meta(_ATLAS_PATH)
+    if raw == "" {
+        println("atlas_bloom: stats — meta unavailable or stale (run build)")
+        return 0
+    }
+    let bits = _json_int_g(raw, "bit_count")
+    let byts = _json_int_g(raw, "byte_count")
+    let hashes = _json_int_g(raw, "hash_count")
+    let ins = _json_int_g(raw, "insert_count")
+    let dom = _json_int_g(raw, "distinct_domains")
+    let pfx = _json_int_g(raw, "distinct_prefixes")
+    let sb = _json_int_g(raw, "set_bits")
+    let fill_ppm = _json_int_g(raw, "fill_ratio_ppm")
+    let dur = _json_int_g(raw, "duration_ms")
+    let mt = _json_int_g(raw, "source_mtime")
+    let sha = _json_str_g(raw, "sha256_bitmap")
+    let fpstr = _json_str_g(raw, "theoretical_fp")  // string form may not match; fallback
+    println("atlas_bloom: stats")
+    println("  bloom:            " + _BLOOM_PATH)
+    println("  meta:             " + _META_PATH)
+    println("  source_mtime:     " + to_string(mt))
+    println("  bit_count:        " + to_string(bits))
+    println("  byte_count:       " + to_string(byts))
+    println("  hash_count:       " + to_string(hashes))
+    println("  insert_count:     " + to_string(ins))
+    println("  distinct_domains: " + to_string(dom))
+    println("  distinct_prefixes:" + to_string(pfx))
+    println("  set_bits:         " + to_string(sb))
+    println("  fill_ratio_ppm:   " + to_string(fill_ppm))
+    println("  theoretical_fp:   " + (if fpstr == "" { "n/a" } else { fpstr }))
+    println("  duration_ms:      " + to_string(dur))
+    println("  sha256_bitmap:    " + sha)
+    return 0
+}
+
+// ═══════════════════════════════════════════════════════════
+// CLI dispatch
+// ═══════════════════════════════════════════════════════════
+let a = args()
+let mut cmd = "stats"
+if len(a) > 2 { cmd = a[2] }
+
+if cmd == "build" {
+    let n = build(_ATLAS_PATH, _BIT_COUNT_DEFAULT, _HASH_COUNT_DEFAULT)
+    if n < 1 {
+        println("atlas_bloom: build produced 0 inserts (check atlas path / perms)")
+        exit(1)  // @allow-silent-exit
+    }
+    println("atlas_bloom: build OK — " + _BLOOM_PATH + " (inserts=" + to_string(n) + ")")
+    exit(0)
+} else if cmd == "check" {
+    if len(a) < 4 {
+        println("usage: hexa atlas_bloom.hexa check <token>")
+        exit(1)  // @allow-silent-exit
+    }
+    let tok = a[3]
+    let possible = check(tok)
+    if possible { println(tok + "\tmaybe") } else { println(tok + "\treject") }
+    exit(0)
+} else if cmd == "verify" {
+    let mut n: i64 = 1000
+    if len(a) > 3 { try { n = to_int(a[3]) } catch e {} }  // @allow-silent-catch
+    let _ = verify(n)
+    exit(0)
+} else if cmd == "stats" {
+    let _ = stats()
+    exit(0)
+} else {
+    println("usage: hexa atlas_bloom.hexa {build|check <token>|verify [N]|stats}")
+    exit(1)  // @allow-silent-exit
+}
