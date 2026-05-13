@@ -54,15 +54,21 @@ See [`examples/`](examples/) for more, [`spec/n6.md`](spec/n6.md) for the full g
 
 ## Live preview
 
-Both themes rendered with [shiki](https://shiki.style/) from the shipped grammar — same content, different theme. Open the SVGs directly to zoom.
+Both themes rendered with [shiki](https://shiki.style/) from the shipped grammar — same content, different theme.
+
+**github-dark**
 
 <p align="center">
-  <img src="docs/preview-dark.svg" width="48%" alt="github-dark theme">
-  &nbsp;
-  <img src="docs/preview-light.svg" width="48%" alt="github-light theme">
+  <img src="docs/preview-dark.svg" alt="github-dark theme">
 </p>
 
-Browser-only side-by-side view: [`docs/preview.html`](docs/preview.html). Regenerate via `node scripts/render_svg.mjs` — see [`scripts/README.md`](scripts/README.md).
+**github-light**
+
+<p align="center">
+  <img src="docs/preview-light.svg" alt="github-light theme">
+</p>
+
+Browser-only view (combined): [`docs/preview.html`](docs/preview.html). Regenerate via `node scripts/render_svg.mjs` — see [`scripts/README.md`](scripts/README.md).
 
 ## Type alphabet
 
