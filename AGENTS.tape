@@ -51,12 +51,13 @@
 
 @I id001 := "n6" :: identity-claim [d=2026-05-14 active]
   kind = "NEXUS-6 Knowledge Atlas — semantic atom layer"
+  brief = "semantic atom layer · typed verified atoms · grade ladder · sister format"
   tagline = "typed verified atoms · grade ladder · provenance edges"
   axis = "semantic-atlas serialization (not byte canon, not runtime trace)"
   grammar = "append-only · line-oriented · grep-friendly · type-graded"
   grade-ladder = "0–10 numeric grade with `*` verified · `!` breakthrough · `?` hypothesis"
   type-alphabet = [@P, @R, @F, @C, @X, @S, @L, @D, @?]
-  parent = "dancinlab ecosystem · cites echoes/LATTICE_POLICY.md as authority"
+  parent = "dancinlab"
 
 @I id002 := "n6.sibling-format-role" :: identity-claim [d=2026-05-14 active]
   <: id001
@@ -105,7 +106,6 @@
 
 @D g3 := "honesty-obligation-external" :: governance [required deny:write]
   rule = "Claims about external entities (companies · fabs · vendors · standards bodies) must NOT include lattice-fit assertions. Use their OWN invariants."
-  authority = "raw#10 C3 · [@x_lattice_policy] §1.3"
   @> AGENTS.md
 
 @D g4 := "commit-conventions" :: governance [recommended]
@@ -123,7 +123,6 @@
 
 @X x_lattice_policy := "echoes/LATTICE_POLICY.md" :: policy [d=2026-05-12 active]
   url = "https://github.com/dancinlab/echoes/blob/main/LATTICE_POLICY.md"
-  scope = "cross-project SSOT — real-limits-first · external-entity ban · raw#10 C3"
 
 @X x_tape_spec := "tape v1.2 spec" :: spec [d=2026-05-14 active]
   url = "https://github.com/dancinlab/tape/blob/main/spec/tape.md"
