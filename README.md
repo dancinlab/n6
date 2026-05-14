@@ -52,6 +52,61 @@
 
 See [`examples/`](examples/) for more, [`spec/n6.md`](spec/n6.md) for the full grammar.
 
+## Status
+
+- v1 spec live — 9 types · 7 edges · grade ladder 0–10 with `*` / `!` / `?` markers
+- 9,624-entry reference corpus (2026-04-25 snapshot) — 66.2% at `[10*]+`, composite 0.83379
+- 12 reference hexa-lang algorithms (`algorithms/`) — `atlas_absorb` / `atlas_query` / `atlas_health` / `atlas_bloom` / `atlas_bootstrap` / `atlas_deg_rebuild` / `atlas_health_export` / `atlas_hot_shard` / `atlas_map_export` / `atlas_mmap` / `atlas_predict_cache` / `atlas_scan_opt`
+- TextMate grammar shipped (`syntaxes/n6.tmLanguage.json`)
+- Sibling of [`hxc`](https://github.com/dancinlab/hxc) (byte-canonical wire), [`tape`](https://github.com/dancinlab/tape) (agent-execution trace), and `n12` (12-axis sparse cube) — `.n6` is the **semantic / verified-atom** layer; tape adapters (`tape_to_n6`) promote runtime atoms into n6
+- Wilson integration: atlas plugin landing TBD; reference corpus authored at `~/core/atlas/`
+
+> [!IMPORTANT]
+> All writes go through `_guarded_append_atlas()` (schema + dedup). The append path is the safety-critical surface — see [`algorithms/atlas_absorb.hexa`](algorithms/atlas_absorb.hexa).
+
+## Install
+
+```sh
+# 1. Install hexa-lang (gives you `hexa` runtime + `hx` package manager)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/dancinlab/hexa-lang/main/install.sh)"
+
+# 2. Clone n6 (no `bin/n6` CLI dispatcher yet — algorithms run directly via `hexa run`)
+git clone https://github.com/dancinlab/n6.git ~/core/n6
+cd ~/core/n6
+```
+
+`hx install n6` is not yet wired (no `bin/n6` entry point) — the repo ships reference algorithms in `algorithms/*.hexa` that you invoke directly with `hexa run`. A thin CLI dispatcher is on the roadmap.
+
+## Run
+
+```sh
+# absorb / validate an atlas directory (schema check + dedup; the safety-critical entry)
+hexa run algorithms/atlas_absorb.hexa ~/core/atlas
+
+# query the atlas — grep by type / domain / grade / edge
+hexa run algorithms/atlas_query.hexa ~/core/atlas --type=R --grade='10*'
+hexa run algorithms/atlas_query.hexa ~/core/atlas --domain=cosmology
+
+# health report — type distribution · grade histogram · unverified crossings · omega closure status
+hexa run algorithms/atlas_health.hexa ~/core/atlas
+hexa run algorithms/atlas_health_export.hexa ~/core/atlas > /tmp/atlas-health.json
+
+# index / cache / shard helpers
+hexa run algorithms/atlas_bloom.hexa ~/core/atlas      # bloom filter for fast id lookup
+hexa run algorithms/atlas_mmap.hexa ~/core/atlas       # mmap'd entry index
+hexa run algorithms/atlas_predict_cache.hexa ~/core/atlas
+hexa run algorithms/atlas_hot_shard.hexa ~/core/atlas
+
+# bootstrap a new atlas directory
+hexa run algorithms/atlas_bootstrap.hexa /tmp/my-atlas
+
+# parse / render a single .n6 file (smoke-check the grammar)
+hexa parse examples/01_primitives.n6
+hexa run algorithms/atlas_map_export.hexa examples/03_crossings.n6
+```
+
+`HEXA_LANG` env points the runtime at the hexa-lang checkout (default `~/core/hexa-lang`). Override `HEXA` to use a non-default hexa binary path.
+
 ## Live preview
 
 Both themes rendered with [shiki](https://shiki.style/) from the shipped grammar — same content, different theme.
