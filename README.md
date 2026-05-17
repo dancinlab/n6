@@ -176,6 +176,14 @@ Conservative — unrecognised continuations are hints, never hard errors.
 A Claude Code plugin can wire it via `.lsp.json`:
 `{ "n6": { "command": "n6-lsp", "extensionToLanguage": {".n6":"n6"} } }`.
 
+### tree-sitter grammar (`tree-sitter-n6/`)
+
+A tree-sitter grammar for editors on the tree-sitter stack (Neovim, Helix,
+Zed, Emacs). Total line model — every line resolves to `comment` / `header`
+/ `edge` / `body` / `text` / `blank`, exposing `type` and `edge_op` nodes
+for `queries/highlights.scm`. Verified: `tree-sitter parse` reaches **0
+ERROR** on all `examples/*.n6`. Build: `cd tree-sitter-n6 && tree-sitter generate`.
+
 ## Repo layout
 
 ```

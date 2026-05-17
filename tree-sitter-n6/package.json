@@ -1,0 +1,11 @@
+{
+  "name": "tree-sitter-n6",
+  "version": "0.1.0",
+  "description": "tree-sitter grammar for the .n6 format",
+  "repository": "https://github.com/dancinlab/n6",
+  "license": "CC0-1.0",
+  "keywords": ["tree-sitter", "parser", "n6", "dancinlab"],
+  "tree-sitter": [
+    { "scope": "source.n6", "file-types": ["n6"], "highlights": ["queries/highlights.scm"] }
+  ]
+}
