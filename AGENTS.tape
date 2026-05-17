@@ -47,6 +47,10 @@
   uses = [@I, @L, @D, @F, @X, @H, "<:", "@>", "[required]", "[@id]"]
   primer = "see top-of-file 39-line comment block"
 
+@X wilson_pool := "wilson pool — resource utilization" :: guide [active]
+  tldr = "Heavy / deterministic work (build · drill · probe · compile · test-sweep · GPU fire) → do NOT serialize on localhost; route to the host pool: `wilson pool list` then `wilson pool on <host> <cmd>`, or a ToolUse `\"host\"` field. Empty roster = degrade-to-local, fine."
+  detail = "~/core/atlas/POOL.tape"
+
 # ─── §2 Identity claims (what n6 IS) ──────────────────────────────────
 
 @I id001 := "n6" :: identity-claim [d=2026-05-14 active]
