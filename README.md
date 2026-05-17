@@ -159,6 +159,23 @@ Reference corpus (2026-04-25 snapshot): 66.2% at `[10*]+`, 1,268 unverified cros
 
 `.n6` is not yet a registered language on [github/linguist](https://github.com/github-linguist/linguist). The repo ships a TextMate grammar — see [`syntaxes/README.md`](syntaxes/README.md) for VS Code / Sublime / TextMate install steps.
 
+### LSP (`lsp/n6_lsp.py`)
+
+Zero-dependency stdio LSP server (Python 3.8+) — spec-grounded diagnostics
+(BOM/CRLF, 9-type alphabet `@P/@C/@L/@F/@R/@S/@X/@?/@E`, header shape,
+2-space continuation indent, 7-edge alphabet) + hover for entry types and
+edge operators.
+
+```bash
+bin/n6-lsp                # speak LSP on stdin/stdout (point your editor here)
+bin/n6-lsp --check FILE   # one-shot lint (exit 1 on any error)
+```
+
+Verified against all `examples/*.n6` (0 errors) and a broken fixture.
+Conservative — unrecognised continuations are hints, never hard errors.
+A Claude Code plugin can wire it via `.lsp.json`:
+`{ "n6": { "command": "n6-lsp", "extensionToLanguage": {".n6":"n6"} } }`.
+
 ## Repo layout
 
 ```
