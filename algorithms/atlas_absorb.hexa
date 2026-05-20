@@ -1,6 +1,5 @@
 // ══════════════════════════════════════════════════════════════
 // nexus/n6/atlas_absorb.hexa — atlas auto-absorption module
-// raw 108 (discovery-implementation-absorption) + own#9 (lens-auto-absorb-atlas)
 // Centralized unlock-append-relock cycle for chflags-locked atlas.n6
 //
 // @resolver-bypass(reason="darwin-native-chflags-+-local-fs-absorption")
@@ -156,7 +155,6 @@ fn run_absorb() -> i64 {
     }
 
     // Append separator + each shard
-    let absorb_marker = "\n# ══════════════════════════════════════════════════════════════\n# atlas_absorb module — " + shard_count + " shards bulk-absorbed (raw 108 + own#9)\n# ══════════════════════════════════════════════════════════════"
     let pre_cmd = "echo " + _shell_quote(absorb_marker) + " >> " + _shell_quote(target_atlas)
     exec(pre_cmd)
     let absorb_cmd = "cd " + _shell_quote(target_root) + " && for f in $(ls " + glob + " 2>/dev/null | sort); do echo; echo \"# .. $(basename $f) ..\"; cat \"$f\"; done >> " + _shell_quote(target_atlas)
