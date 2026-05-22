@@ -21,7 +21,9 @@
 `.n6` is a knowledge atlas grammar: each entry is a typed fact (primitive, constant, law, formula, relation, symmetry, crossing, or open question) carrying provenance edges (depends, derives, applies, equivalent, converges, verified, breakthrough) and a verification grade (0–10 with `*` / `!` / `?` markers).
 
 > [!NOTE]
-> Sister of [`hxc`](https://github.com/dancinlab/hxc) (wire/storage canonical for JSON/JSONL) and `n12` (12-axis sparse cube). `.n6` is the **semantic** layer; `hxc` is the **byte-canonical** layer; `n12` is the **multidimensional** layer.
+> Sister of [`hxc`](https://github.com/dancinlab/hxc) (generic byte-canonical wire format for JSON/JSONL) and `n12` (12-axis sparse cube). `.n6` is the **semantic** layer; `hxc` is the **byte-canonical** layer; `n12` is the **multidimensional** layer.
+>
+> As of 2026-05-22, **`hxc` is retired as the atlas runtime artifact** — hexa-lang's `static_atlas()` now parses `.n6` directly via the merger (no binary sidecar, no `dist/atlas.hxc`). `hxc` remains a sibling format for other byte-canonical use cases.
 
 ## At a glance
 
@@ -60,6 +62,25 @@ See [`examples/`](examples/) for more, [`spec/n6.md`](spec/n6.md) for the full g
 - TextMate grammar shipped (`syntaxes/n6.tmLanguage.json`)
 - Sibling of [`hxc`](https://github.com/dancinlab/hxc) (byte-canonical wire), [`tape`](https://github.com/dancinlab/tape) (agent-execution trace), and `n12` (12-axis sparse cube) — `.n6` is the **semantic / verified-atom** layer; tape adapters (`tape_to_n6`) promote runtime atoms into n6
 - Wilson integration: atlas plugin landing TBD; reference corpus authored at `~/core/atlas/`
+
+## Atlas corpus location (2026-05-22)
+
+The **canonical atlas corpus** (`atlas.n6` + `atlas.append.*.n6` shards) lives in the hexa-lang repo as a single source of truth:
+
+```
+~/core/hexa-lang/n6/atlas.n6              # primary corpus
+~/core/hexa-lang/n6/atlas.append.*.n6     # 9 append shards (3 anima-origin + 6 RTSC witness)
+```
+
+Downstream consumers (anima, etc.) point at it via the `HEXA_ATLAS_N6` environment variable — no symlinks, no local copies, no per-repo vendoring:
+
+```sh
+export HEXA_ATLAS_N6=~/core/hexa-lang/n6
+```
+
+The `hxc` binary sidecar (`dist/atlas.hxc`) is **retired** as the atlas runtime artifact. The hexa-lang runtime parses `.n6` directly via the merger at startup. References: hexa-lang PRs [#312](https://github.com/dancinlab/hexa-lang/pull/312) (no-hxc closure) and [#314](https://github.com/dancinlab/hexa-lang/pull/314) (shard consolidate).
+
+This **n6 repo** holds the *grammar spec* and *reference algorithms* — it does **not** vendor the corpus itself. Only tiny didactic shards live under [`examples/`](examples/).
 
 > [!IMPORTANT]
 > All writes go through `_guarded_append_atlas()` (schema + dedup). The append path is the safety-critical surface — see [`algorithms/atlas_absorb.hexa`](algorithms/atlas_absorb.hexa).
@@ -105,7 +126,7 @@ hexa parse examples/01_primitives.n6
 hexa run algorithms/atlas_map_export.hexa examples/03_crossings.n6
 ```
 
-`HEXA_LANG` env points the runtime at the hexa-lang checkout (default `~/core/hexa-lang`). Override `HEXA` to use a non-default hexa binary path.
+`HEXA_LANG` env points the runtime at the hexa-lang checkout (default `~/core/hexa-lang`). Override `HEXA` to use a non-default hexa binary path. To target the canonical corpus, set `HEXA_ATLAS_N6=~/core/hexa-lang/n6` and pass `$HEXA_ATLAS_N6` instead of `~/core/atlas` in the commands above.
 
 ## Live preview
 

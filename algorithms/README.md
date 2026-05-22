@@ -33,6 +33,17 @@ hexa atlas_absorb.hexa --append --file=atlas.n6 --entry='@R new_rel :: foundatio
 
 Each module ships a `--selftest` flag and prints its CLI surface with `--help`.
 
+## Canonical atlas corpus (2026-05-22)
+
+The canonical `atlas.n6` corpus and its `atlas.append.*.n6` shards live in the hexa-lang repo (single SSOT):
+
+```
+~/core/hexa-lang/n6/atlas.n6
+~/core/hexa-lang/n6/atlas.append.*.n6
+```
+
+Point these algorithms at the canonical corpus by setting `HEXA_ATLAS_N6=~/core/hexa-lang/n6` and passing that directory as `<target_root>` (e.g. `hexa run atlas_absorb.hexa $HEXA_ATLAS_N6`). The `dist/atlas.hxc` binary sidecar is retired — the hexa-lang runtime parses `.n6` directly via the merger (PRs hexa-lang#312 / #314).
+
 ## Porting notes
 
 The append path is the safety-critical surface — see `atlas_absorb.hexa` and the upstream `shared/blowup/lib/atlas_guard.hexa.inc` for the schema-validation contract. Any non-hexa implementation must preserve the dedup-on-`(type, id)` invariant and the byte-canonical write semantics described in [`../spec/n6.md` §Streaming](../spec/n6.md).
