@@ -87,16 +87,15 @@ This **n6 repo** holds the *grammar spec* and *reference algorithms* — it does
 
 ## Install
 
-```sh
-# 1. Install hexa-lang (gives you `hexa` runtime + `hx` package manager)
+```bash
+# 1. Install hexa-lang (gives you `hexa` + `hx` package manager)
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/dancinlab/hexa-lang/main/install.sh)"
 
-# 2. Clone n6 (no `bin/n6` CLI dispatcher yet — algorithms run directly via `hexa run`)
-git clone https://github.com/dancinlab/n6.git ~/core/n6
-cd ~/core/n6
+# 2. Install n6
+hx install n6
 ```
 
-`hx install n6` is not yet wired (no `bin/n6` entry point) — the repo ships reference algorithms in `algorithms/*.hexa` that you invoke directly with `hexa run`. A thin CLI dispatcher is on the roadmap.
+`hx install n6` clones the repo into the `hx` package cache; there is no `bin/n6` CLI dispatcher yet, so reference algorithms in `algorithms/*.hexa` run directly via `hexa run <path>.hexa`. A thin CLI dispatcher is on the roadmap.
 
 ## Run
 
