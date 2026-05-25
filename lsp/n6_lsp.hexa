@@ -284,54 +284,41 @@ fn write_message(body: string) {
 }
 
 // ─── JSON extraction (substring; mirrors protocol.hexa) ────────────────
-fn extract_method(msg: string) -> string {
-    let key = "\"method\":\""
+// Whitespace-tolerant key locator. Finds `"<name>"` then skips whitespace,
+// requires a `:`, skips trailing whitespace, and returns the index of the
+// value's first char (relative to msg). -1 when the key is absent. This is
+// the parity fix vs the .py json.loads, which accepts `"method": "x"` (space
+// after the colon) just as readily as the compact `"method":"x"`.
+fn value_start(msg: string, name: string) -> int {
+    let key = "\"" + name + "\""
     let idx = msg.index_of(key)
-    if idx < 0 { return "" }
-    let after = msg.substring(idx + len(key), len(msg))
-    let end = after.index_of("\"")
-    if end < 0 { return "" }
-    return after.substring(0, end)
-}
-
-// raw id token (a number like `1` or a quoted `"abc"`); "" if absent.
-fn extract_id(msg: string) -> string {
-    let key = "\"id\":"
-    let idx = msg.index_of(key)
-    if idx < 0 { return "" }
-    let after = msg.substring(idx + len(key), len(msg)).trim_start()
-    if after.starts_with("\"") {
-        let end = after.substring(1, len(after)).index_of("\"")
-        if end < 0 { return "" }
-        return "\"" + after.substring(1, 1 + end) + "\""
+    if idx < 0 { return -1 }
+    let mut i = idx + len(key)
+    // skip whitespace before the colon
+    while i < len(msg) {
+        let c = msg.substring(i, i + 1)
+        if c == " " || c == "\t" || c == "\n" || c == "\r" { i = i + 1; continue }
+        break
     }
-    let mut i = 0
-    while i < len(after) {
-        let c = after.substring(i, i + 1)
-        if c == "," || c == "}" || c == " " || c == "\n" || c == "\r" || c == "\t" { break }
-        i = i + 1
+    if i >= len(msg) { return -1 }
+    if msg.substring(i, i + 1) != ":" { return -1 }
+    i = i + 1
+    // skip whitespace after the colon
+    while i < len(msg) {
+        let c = msg.substring(i, i + 1)
+        if c == " " || c == "\t" || c == "\n" || c == "\r" { i = i + 1; continue }
+        break
     }
-    return after.substring(0, i)
+    return i
 }
 
-fn extract_uri(msg: string) -> string {
-    let key = "\"uri\":\""
-    let idx = msg.index_of(key)
-    if idx < 0 { return "" }
-    let after = msg.substring(idx + len(key), len(msg))
-    let end = after.index_of("\"")
-    if end < 0 { return "" }
-    return after.substring(0, end)
-}
-
-// textDocument.text or contentChanges[*].text — decodes \" \n \t \\ escapes.
-// For didChange the .py used the LAST change; with full-sync (textDocumentSync
-// 1) clients send exactly one change, so the FIRST "text" is that content.
-fn extract_text(msg: string) -> string {
-    let key = "\"text\":\""
-    let idx = msg.index_of(key)
-    if idx < 0 { return "" }
-    let after = msg.substring(idx + len(key), len(msg))
+// read a JSON string value starting at vs (which must point at the opening
+// quote); returns the decoded contents (\" \n \r \t \\ handled). "" if no
+// quote at vs.
+fn read_string_at(msg: string, vs: int) -> string {
+    if vs < 0 || vs >= len(msg) { return "" }
+    if msg.substring(vs, vs + 1) != "\"" { return "" }
+    let after = msg.substring(vs + 1, len(msg))
     let mut i = 0
     let mut out = ""
     while i < len(after) {
@@ -354,16 +341,48 @@ fn extract_text(msg: string) -> string {
     return out
 }
 
+fn extract_method(msg: string) -> string {
+    return read_string_at(msg, value_start(msg, "method"))
+}
+
+// raw id token (a number like `1` or a quoted `"abc"`); "" if absent.
+fn extract_id(msg: string) -> string {
+    let vs = value_start(msg, "id")
+    if vs < 0 { return "" }
+    let after = msg.substring(vs, len(msg))
+    if after.starts_with("\"") {
+        let end = after.substring(1, len(after)).index_of("\"")
+        if end < 0 { return "" }
+        return "\"" + after.substring(1, 1 + end) + "\""
+    }
+    let mut i = 0
+    while i < len(after) {
+        let c = after.substring(i, i + 1)
+        if c == "," || c == "}" || c == " " || c == "\n" || c == "\r" || c == "\t" { break }
+        i = i + 1
+    }
+    return after.substring(0, i)
+}
+
+fn extract_uri(msg: string) -> string {
+    return read_string_at(msg, value_start(msg, "uri"))
+}
+
+// textDocument.text or contentChanges[*].text — decodes \" \n \t \\ escapes.
+// For didChange the .py used the LAST change; with full-sync (textDocumentSync
+// 1) clients send exactly one change, so the FIRST "text" is that content.
+fn extract_text(msg: string) -> string {
+    return read_string_at(msg, value_start(msg, "text"))
+}
+
 // position.line — the integer inside "position":{"line":N,"character":M}.
 fn extract_position_line(msg: string) -> int {
-    let key = "\"position\":"
-    let pidx = msg.index_of(key)
+    let pidx = msg.index_of("\"position\"")
     if pidx < 0 { return -1 }
     let after = msg.substring(pidx, len(msg))
-    let lkey = "\"line\":"
-    let lidx = after.index_of(lkey)
-    if lidx < 0 { return -1 }
-    let tail = after.substring(lidx + len(lkey), len(after)).trim_start()
+    let vs = value_start(after, "line")
+    if vs < 0 { return -1 }
+    let tail = after.substring(vs, len(after))
     let mut i = 0
     while i < len(tail) {
         let c = tail.substring(i, i + 1)
