@@ -1,0 +1,438 @@
+// n6_lsp.hexa — canonical LSP server for the .n6 knowledge-atlas grammar (v1).
+// Hexa-native port of n6_lsp.py (dancinlab governance g1). Stdio JSON-RPC,
+// spec-grounded diagnostics + hover from spec/n6.md. Conservative: unrecognised
+// body forms are hints (sev 2), never hard errors.
+//
+//   n6-lsp                # speak LSP on stdin/stdout
+//
+// PORTING NOTES (hexa-native, this session):
+//   · No `null` literal — hexa rejects it. Docs map is uri→text built with #{};
+//     membership via has_key(docs, uri). "result: null" is emitted as the
+//     literal JSON string "null" inside response bodies.
+//   · No `re` — the HDR / KV regexes are hand-rolled with string ops.
+//   · stdin framing is inline (n6 is standalone — no `use` of hexa-lang self/lsp).
+//   · read_stdin_n_c returns a char* AS AN INT; from_cstring() converts to a
+//     hexa string. `-> str` would NOT auto-convert (returns the pointer int).
+
+// ─── stdin framing (LSP wire) ──────────────────────────
+// read_stdin_n_c reads EXACTLY n bytes from fd 0 (runtime.c, raw read(2)) and
+// returns the C buffer pointer as an int; from_cstring copies it into a string.
+extern fn read_stdin_n_c(n: int) -> int
+
+// ─── spec maps ─────────────────────────────────────────
+// TYPES: entry-type letter → description. EDGES: edge token → meaning.
+// Held as parallel arrays (hexa map iteration order is not relied upon here;
+// arrays keep the canonical alphabet order the .py preserved).
+let TYPE_KEYS = ["P", "C", "L", "F", "R", "S", "X", "?", "E"]
+let TYPE_DESC = [
+    "Primitive — irreducible foundational value",
+    "Constant — computed from primitives",
+    "Law — qualitative principle / invariant",
+    "Formula — explicit functional form",
+    "Relation — equality / structural identity",
+    "Symmetry — topological / group-theoretic property",
+    "Crossing — bridge between domains",
+    "Unknown — open hypothesis awaiting breakthrough",
+    "Experiment — empirical measurement record",
+]
+let EDGE_KEYS = ["<-", "->", "=>", "==", "~>", "|>", "!!"]
+let EDGE_MNG = [
+    "depends_on", "derives", "application",
+    "equivalent", "converges_to", "verified_by",
+    "breakthrough",
+]
+
+fn type_index(ty: string) -> int {
+    let mut i = 0
+    while i < len(TYPE_KEYS) {
+        if TYPE_KEYS[i] == ty { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+fn edge_index(e: string) -> int {
+    let mut i = 0
+    while i < len(EDGE_KEYS) {
+        if EDGE_KEYS[i] == e { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+// "@P @C @L ..." — the alphabet rendered for the unknown-type message.
+fn types_alphabet() -> string {
+    let mut parts = []
+    let mut i = 0
+    while i < len(TYPE_KEYS) {
+        parts.push(TYPE_KEYS[i])
+        i = i + 1
+    }
+    return parts.join(" @")
+}
+
+// "<- -> => == ~> |> !!" — edges rendered for the unrecognised-continuation msg.
+fn edges_alphabet() -> string {
+    return EDGE_KEYS.join(" ")
+}
+
+// ─── JSON string escaping (for diagnostic messages + hover values) ─────
+// Escape the subset the .py's json.dumps would: \ " \n \r \t.
+fn json_escape(s: string) -> string {
+    let mut out = ""
+    let mut i = 0
+    while i < len(s) {
+        let c = s.substring(i, i + 1)
+        if c == "\\" { out = out + "\\\\" }
+        else if c == "\"" { out = out + "\\\"" }
+        else if c == "\n" { out = out + "\\n" }
+        else if c == "\r" { out = out + "\\r" }
+        else if c == "\t" { out = out + "\\t" }
+        else { out = out + c }
+        i = i + 1
+    }
+    return out
+}
+
+// ─── diagnostic builder ────────────────────────────────
+// Mirrors .py diag(): a single diagnostic object as a JSON string.
+fn diag(ln: int, c0: int, c1: int, msg: string, sev: int) -> string {
+    return "{\"range\":{\"start\":{\"line\":" + to_string(ln) +
+           ",\"character\":" + to_string(c0) + "},\"end\":{\"line\":" +
+           to_string(ln) + ",\"character\":" + to_string(c1) + "}}," +
+           "\"severity\":" + to_string(sev) +
+           ",\"source\":\"n6-lsp\",\"message\":\"" + json_escape(msg) + "\"}"
+}
+
+// ─── string helpers (rstrip/lstrip variants the .py used) ──────────────
+// rstrip a single trailing "\r" (matches .py s.rstrip("\r") for one CR).
+fn rstrip_cr(s: string) -> string {
+    if s.ends_with("\r") { return s.substring(0, len(s) - 1) }
+    return s
+}
+
+// count leading spaces (indent), matching len(s) - len(s.lstrip(" ")).
+fn leading_spaces(s: string) -> int {
+    let mut i = 0
+    while i < len(s) {
+        if s.substring(i, i + 1) != " " { break }
+        i = i + 1
+    }
+    return i
+}
+
+// ─── HDR hand-roll ─────────────────────────────────────
+// .py regex: ^@[A-Z?]\s+.+?::\s*\S+\s*\[[^\]\n]*\]\s*$
+// Conservative check: starts "@", char[1] is a known type, whitespace after
+// the type, contains "::", a "[" appears after "::", and the trimmed line
+// ends with "]". Malformed → caller emits one "malformed header" diag.
+fn hdr_match(s: string) -> bool {
+    if !s.starts_with("@") { return false }
+    if len(s) < 2 { return false }
+    let ty = s.substring(1, 2)
+    if type_index(ty) < 0 { return false }
+    // whitespace after the type letter
+    let after_ty = s.substring(2, 3)
+    if after_ty != " " && after_ty != "\t" { return false }
+    // must contain "::"
+    let cc = s.index_of("::")
+    if cc < 0 { return false }
+    // an id/expr must exist between the type and "::" (\s+.+?)
+    let between = s.substring(3, cc).trim()
+    if between == "" { return false }
+    // a "[" appears after "::", and trimmed line ends with "]"
+    let after_cc = s.substring(cc + 2, len(s))
+    let lb = after_cc.index_of("[")
+    if lb < 0 { return false }
+    // domain token (\S+) must exist between "::" and "[" (\s*\S+\s*)
+    let domain = after_cc.substring(0, lb).trim()
+    if domain == "" { return false }
+    let trimmed = s.trim_end()
+    if !trimmed.ends_with("]") { return false }
+    return true
+}
+
+// ─── KV hand-roll ──────────────────────────────────────
+// .py regex: ^\S+\s*=  → key is non-empty, contains no space, "=" follows
+// (optionally after whitespace). We require the key (up to "=") to be a single
+// whitespace-free token.
+fn kv_match(t: string) -> bool {
+    let eq = t.index_of("=")
+    if eq <= 0 { return false }
+    let key = t.substring(0, eq).trim_end()
+    if key == "" { return false }
+    if key.contains(" ") { return false }
+    if key.contains("\t") { return false }
+    return true
+}
+
+// first whitespace-delimited token of t (t.split(" ", 1)[0] in .py, but the
+// continuation tokens never contain tabs in practice; split on " ").
+fn first_token(t: string) -> string {
+    let sp = t.index_of(" ")
+    if sp < 0 { return t }
+    return t.substring(0, sp)
+}
+
+// ─── validate ──────────────────────────────────────────
+// Returns a JSON array string of diagnostics. Mirrors .py validate().
+// Named validate_n6 (not bare `validate`) — n6-grammar-specific, distinct from
+// any generic stdlib validator (commons g61 advisory).
+fn validate_n6(text: string) -> string {
+    let mut diags = []
+    // BOM check skipped (encoding-fragile in hexa) — see PR body fidelity gap.
+    if text.contains("\r") {
+        diags.push(diag(0, 0, 1, "byte-canonical: LF line endings only", 1))
+    }
+    let lines = text.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        let raw = lines[i]
+        let s = rstrip_cr(raw)
+        let t = s.trim()
+        if t == "" || t.starts_with("#") {
+            i = i + 1
+            continue
+        }
+        let indent = leading_spaces(s)
+        if s.starts_with("@") {
+            if indent != 0 {
+                diags.push(diag(i, 0, len(s), "entry header must start at column 0", 1))
+                i = i + 1
+                continue
+            }
+            let mut ty = ""
+            if len(s) > 1 { ty = s.substring(1, 2) }
+            if type_index(ty) < 0 {
+                diags.push(diag(i, 1, 2,
+                    "unknown entry type @" + ty + " (alphabet: @" + types_alphabet() + ")", 1))
+            }
+            if !hdr_match(s) {
+                diags.push(diag(i, 0, len(s),
+                    "malformed header — expected `@<type> <id>[ = <expr>] :: <domain> [<grade>]`", 1))
+            }
+        } else {
+            if indent != 2 {
+                diags.push(diag(i, 0, len(s), "continuation indented exactly 2 spaces", 1))
+                i = i + 1
+                continue
+            }
+            let tok = first_token(t)
+            let is_edge = edge_index(tok) >= 0
+            let is_prose = t.starts_with("\"")
+            let is_kv = kv_match(t)
+            if !is_edge && !is_prose && !is_kv {
+                diags.push(diag(i, 2, len(s),
+                    "unrecognised continuation — expected an edge (" + edges_alphabet() + ") or \"prose\"", 2))
+            }
+        }
+        i = i + 1
+    }
+    return "[" + diags.join(",") + "]"
+}
+
+// ─── hover ─────────────────────────────────────────────
+// Returns the markdown value string, or "" when there is nothing to show.
+fn hover(line: string) -> string {
+    let s = line.trim()
+    if s.starts_with("@") && len(s) > 1 {
+        let ty = s.substring(1, 2)
+        let ti = type_index(ty)
+        if ti >= 0 {
+            return "**@" + ty + "** — " + TYPE_DESC[ti]
+        }
+    }
+    let mut i = 0
+    while i < len(EDGE_KEYS) {
+        if s.starts_with(EDGE_KEYS[i]) {
+            return "**" + EDGE_KEYS[i] + "** — " + EDGE_MNG[i] + " edge"
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// ─── LSP framing read ──────────────────────────────────
+// Read ONE LSP-framed message body from stdin. Returns the raw JSON body,
+// or "" at clean EOF. Mirrors hexa-lang self/lsp/protocol.lsp_read_message.
+fn read_message() -> string {
+    let mut content_length = -1
+    let mut saw_header = false
+    while true {
+        let line = input("")
+        if line == "" {
+            if saw_header { break }
+            return ""
+        }
+        saw_header = true
+        let key = "Content-Length:"
+        let ix = line.index_of(key)
+        if ix >= 0 {
+            let v = line.substring(ix + len(key), len(line)).trim_start()
+            content_length = to_int(v)
+        }
+    }
+    if content_length <= 0 { return "" }
+    return from_cstring(read_stdin_n_c(content_length))
+}
+
+// ─── LSP framing write ─────────────────────────────────
+// Frame Content-Length: N\r\n\r\n + body. print() → unbuffered write(2).
+fn write_message(body: string) {
+    let cl = "Content-Length: " + to_string(len(body)) + "\r\n\r\n"
+    print(cl + body)
+}
+
+// ─── JSON extraction (substring; mirrors protocol.hexa) ────────────────
+fn extract_method(msg: string) -> string {
+    let key = "\"method\":\""
+    let idx = msg.index_of(key)
+    if idx < 0 { return "" }
+    let after = msg.substring(idx + len(key), len(msg))
+    let end = after.index_of("\"")
+    if end < 0 { return "" }
+    return after.substring(0, end)
+}
+
+// raw id token (a number like `1` or a quoted `"abc"`); "" if absent.
+fn extract_id(msg: string) -> string {
+    let key = "\"id\":"
+    let idx = msg.index_of(key)
+    if idx < 0 { return "" }
+    let after = msg.substring(idx + len(key), len(msg)).trim_start()
+    if after.starts_with("\"") {
+        let end = after.substring(1, len(after)).index_of("\"")
+        if end < 0 { return "" }
+        return "\"" + after.substring(1, 1 + end) + "\""
+    }
+    let mut i = 0
+    while i < len(after) {
+        let c = after.substring(i, i + 1)
+        if c == "," || c == "}" || c == " " || c == "\n" || c == "\r" || c == "\t" { break }
+        i = i + 1
+    }
+    return after.substring(0, i)
+}
+
+fn extract_uri(msg: string) -> string {
+    let key = "\"uri\":\""
+    let idx = msg.index_of(key)
+    if idx < 0 { return "" }
+    let after = msg.substring(idx + len(key), len(msg))
+    let end = after.index_of("\"")
+    if end < 0 { return "" }
+    return after.substring(0, end)
+}
+
+// textDocument.text or contentChanges[*].text — decodes \" \n \t \\ escapes.
+// For didChange the .py used the LAST change; with full-sync (textDocumentSync
+// 1) clients send exactly one change, so the FIRST "text" is that content.
+fn extract_text(msg: string) -> string {
+    let key = "\"text\":\""
+    let idx = msg.index_of(key)
+    if idx < 0 { return "" }
+    let after = msg.substring(idx + len(key), len(msg))
+    let mut i = 0
+    let mut out = ""
+    while i < len(after) {
+        let c = after.substring(i, i + 1)
+        if c == "\\" && i + 1 < len(after) {
+            let nx = after.substring(i + 1, i + 2)
+            if nx == "\"" { out = out + "\""; i = i + 2; continue }
+            if nx == "n"  { out = out + "\n"; i = i + 2; continue }
+            if nx == "r"  { out = out + "\r"; i = i + 2; continue }
+            if nx == "t"  { out = out + "\t"; i = i + 2; continue }
+            if nx == "\\" { out = out + "\\"; i = i + 2; continue }
+            out = out + c
+            i = i + 1
+            continue
+        }
+        if c == "\"" { break }
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+// position.line — the integer inside "position":{"line":N,"character":M}.
+fn extract_position_line(msg: string) -> int {
+    let key = "\"position\":"
+    let pidx = msg.index_of(key)
+    if pidx < 0 { return -1 }
+    let after = msg.substring(pidx, len(msg))
+    let lkey = "\"line\":"
+    let lidx = after.index_of(lkey)
+    if lidx < 0 { return -1 }
+    let tail = after.substring(lidx + len(lkey), len(after)).trim_start()
+    let mut i = 0
+    while i < len(tail) {
+        let c = tail.substring(i, i + 1)
+        if c == "," || c == "}" || c == " " || c == "\n" || c == "\r" || c == "\t" { break }
+        i = i + 1
+    }
+    if i == 0 { return -1 }
+    return to_int(tail.substring(0, i))
+}
+
+// ─── response helpers ──────────────────────────────────
+fn publish(uri: string, text: string) {
+    let d = validate_n6(text)
+    write_message("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\"," +
+        "\"params\":{\"uri\":\"" + json_escape(uri) + "\",\"diagnostics\":" + d + "}}")
+}
+
+// ─── serve loop ────────────────────────────────────────
+fn serve() {
+    let mut docs = #{}
+    while true {
+        let msg = read_message()
+        if msg == "" { break }   // clean EOF
+        let meth = extract_method(msg)
+        let id = extract_id(msg)
+
+        if meth == "initialize" {
+            let idj = id
+            write_message("{\"jsonrpc\":\"2.0\",\"id\":" + idj +
+                ",\"result\":{\"capabilities\":{\"textDocumentSync\":1," +
+                "\"hoverProvider\":true},\"serverInfo\":{\"name\":\"n6-lsp\"}}}")
+        } else if meth == "shutdown" {
+            write_message("{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":null}")
+        } else if meth == "exit" {
+            break
+        } else if meth == "textDocument/didOpen" {
+            let uri = extract_uri(msg)
+            let text = extract_text(msg)
+            docs[uri] = text
+            publish(uri, text)
+        } else if meth == "textDocument/didChange" {
+            let uri = extract_uri(msg)
+            let text = extract_text(msg)
+            docs[uri] = text
+            publish(uri, text)
+        } else if meth == "textDocument/didClose" {
+            let uri = extract_uri(msg)
+            if has_key(docs, uri) { docs[uri] = "" }
+            write_message("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\"," +
+                "\"params\":{\"uri\":\"" + json_escape(uri) + "\",\"diagnostics\":[]}}")
+        } else if meth == "textDocument/hover" {
+            let uri = extract_uri(msg)
+            let mut txt = ""
+            if has_key(docs, uri) { txt = docs[uri] }
+            let ln = extract_position_line(msg)
+            let lines = txt.split("\n")
+            let mut hv = ""
+            if ln >= 0 && ln < len(lines) { hv = hover(lines[ln]) }
+            if hv != "" {
+                write_message("{\"jsonrpc\":\"2.0\",\"id\":" + id +
+                    ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\"" +
+                    json_escape(hv) + "\"}}}")
+            } else {
+                write_message("{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":null}")
+            }
+        } else if id != "" {
+            write_message("{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":null}")
+        }
+    }
+}
+
+serve()
