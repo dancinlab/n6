@@ -1,4 +1,0 @@
-@P c_light = 299792458 :: physics [tier=0 active]
-  -> derived
-  "speed of light"
-  unit = m_per_s
