@@ -180,7 +180,11 @@ fn first_token(t: string) -> string {
 // any generic stdlib validator (commons g61 advisory).
 fn validate_n6(text: string) -> string {
     let mut diags = []
-    // BOM check skipped (encoding-fragile in hexa) — see PR body fidelity gap.
+    // BOM: UTF-8 byte-order-mark ef bb bf at offset 0. byte_at avoids the
+    // encoding-fragile U+FEFF source literal — mirrors .py text.startswith(BOM).
+    if len(text) >= 3 && byte_at(text, 0) == 239 && byte_at(text, 1) == 187 && byte_at(text, 2) == 191 {
+        diags.push(diag(0, 0, 1, "byte-canonical: UTF-8 with no BOM", 1))
+    }
     if text.contains("\r") {
         diags.push(diag(0, 0, 1, "byte-canonical: LF line endings only", 1))
     }
