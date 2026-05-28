@@ -1,0 +1,536 @@
+// ════════════════════════════════════════════════════════════════════════════
+//  n6_lsp.hexa — canonical LSP server for the `.n6` knowledge-atlas grammar (v1).
+//
+//  hexa-native port of lsp/n6_lsp.py. Spec-grounded diagnostics + hover from
+//  spec/n6.md. Conservative: unrecognised body forms are hints (sev 2), never
+//  hard errors. Grammar:  `@<type> <id>[ = <expr>] :: <domain> [<grade>]` headers
+//  at column 0 + 2-space continuation lines (edges / "prose" / key=val).
+//
+//    n6-lsp-hexa --check FILE          # one-shot lint (exit 1 on error)
+//    n6-lsp-hexa --hover FILE LINENO   # print the hover string (0-based line)
+//    n6-lsp-hexa --stdio               # LSP stdio JSON-RPC server
+//
+//  STDIO SERVER (§6): Content-Length framing over fd 0 via the `read_stdin_n_c`
+//  FFI (hexa-lang runtime #1163) — header byte-by-byte to CRLFCRLF, then N body
+//  bytes; the slurp-to-EOF read_stdin() / line-based input() could not do this on
+//  a never-closing pipe. Dispatches initialize / didOpen·didChange·didSave →
+//  publishDiagnostics / shutdown / exit (hover served via --hover CLI, mirroring
+//  the kosmos-lsp hexa port). HONEST TODO: no per-message flush builtin yet → a
+//  long-lived interactive client may block-buffer (a piped batch drains on EOF).
+//
+//  HARD CONSTRAINTS (hexa house rules):
+//    - pure-hexa, COMPILED-ONLY · NO top-level main() call (fn main auto-fires)
+//    - regex unavailable → reimplemented with starts_with / index_of / substring
+//    - byte-indexed strings; build via `HEXA_MAC_BUILD_OK=1 hexa build` on Mac
+//
+//  SSOT: spec/n6.md (grammar). Parity target: lsp/n6_lsp.py (byte-parity --check).
+// ════════════════════════════════════════════════════════════════════════════
+
+
+// ── §0 string helpers (mirror n6_lsp.py text ops) ────────────────────────────
+
+fn n_is_space(c: string) -> bool {
+    return c == " "
+}
+
+// Python `\s` class: space / tab / CR / LF.
+fn n_is_ws(c: string) -> bool {
+    if c == " "  { return true }
+    if c == "\t" { return true }
+    if c == "\r" { return true }
+    if c == "\n" { return true }
+    return false
+}
+
+fn n_starts_with(s: string, prefix: string) -> bool {
+    let ls = len(s)
+    let lp = len(prefix)
+    if lp > ls { return false }
+    return s.substring(0, lp) == prefix
+}
+
+// Python `s.rstrip("\r")` over a split line (strips trailing CR).
+fn n_rstrip_cr(s: string) -> string {
+    let mut n = len(s)
+    while n > 0 {
+        if s.substring(n - 1, n) == "\r" { n = n - 1 }
+        else { break }
+    }
+    return s.substring(0, n)
+}
+
+// Python `.strip()` — trim leading + trailing ASCII whitespace.
+fn n_strip(s: string) -> string {
+    let n = len(s)
+    if n <= 0 { return "" }
+    let mut a = 0
+    while a < n {
+        if n_is_ws(s.substring(a, a + 1)) { a = a + 1 }
+        else { break }
+    }
+    if a >= n { return "" }
+    let mut b = n
+    while b > a {
+        if n_is_ws(s.substring(b - 1, b)) { b = b - 1 }
+        else { break }
+    }
+    return s.substring(a, b)
+}
+
+// Python `len(s) - len(s.lstrip(" "))` — leading-space indent width.
+fn n_indent(s: string) -> int {
+    let n = len(s)
+    let mut a = 0
+    while a < n {
+        if n_is_space(s.substring(a, a + 1)) { a = a + 1 }
+        else { break }
+    }
+    return a
+}
+
+// Python `s.split(" ", 1)[0]` — first space-delimited token.
+fn n_first_token_space(s: string) -> string {
+    let sp = s.index_of(" ")
+    if sp < 0 { return s }
+    return s.substring(0, sp)
+}
+
+
+// ── §1 mini-regex equivalents (string-op reimplementations) ──────────────────
+
+// KV = re.compile(r"^\S+\s*=")  — ≥1 non-ws, ws*, literal "=" (against stripped t)
+fn n_match_kv(t: string) -> bool {
+    let n = len(t)
+    if n == 0 { return false }
+    let mut i = 0
+    let mut nw = 0
+    while i < n {
+        if n_is_ws(t.substring(i, i + 1)) { break }
+        i = i + 1 nw = nw + 1
+    }
+    if nw == 0 { return false }
+    while i < n {
+        if n_is_ws(t.substring(i, i + 1)) { i = i + 1 }
+        else { break }
+    }
+    if i >= n { return false }
+    return t.substring(i, i + 1) == "="
+}
+
+// tail of HDR after a `::` : \s*\S+\s*\[[^\]\n]*\]\s*$  (s has no \n).
+fn n_hdr_tail_ok(s: string, j: int) -> bool {
+    let n = len(s)
+    let mut i = j
+    while i < n { if n_is_ws(s.substring(i, i + 1)) { i = i + 1 } else { break } }   // \s*
+    let mut nw = 0                                                                    // \S+ (domain)
+    while i < n { if n_is_ws(s.substring(i, i + 1)) { break } i = i + 1 nw = nw + 1 }
+    if nw == 0 { return false }
+    while i < n { if n_is_ws(s.substring(i, i + 1)) { i = i + 1 } else { break } }   // \s*
+    if i >= n { return false }                                                        // \[
+    if s.substring(i, i + 1) != "[" { return false }
+    i = i + 1
+    while i < n { if s.substring(i, i + 1) == "]" { break } i = i + 1 }              // [^\]]*
+    if i >= n { return false }
+    if s.substring(i, i + 1) != "]" { return false }                                  // \]
+    i = i + 1
+    while i < n { if n_is_ws(s.substring(i, i + 1)) { i = i + 1 } else { break } }   // \s*$
+    return i == n
+}
+
+// HDR = re.compile(r"^@[A-Z?]\s+.+?::\s*\S+\s*\[[^\]\n]*\]\s*$"), matched on `s`.
+//   `.+?` is lazy → accept iff SOME `::` (with ≥1 char before it after the \s+)
+//   leaves a tail matching n_hdr_tail_ok. Existence == regex acceptance.
+fn n_match_hdr(s: string) -> bool {
+    let n = len(s)
+    if n < 2 { return false }
+    if s.substring(0, 1) != "@" { return false }
+    let c1 = s.substring(1, 2)
+    let is_type = (c1 >= "A" && c1 <= "Z") || c1 == "?"
+    if is_type == false { return false }
+    let mut i = 2
+    let mut ws = 0                                                                    // \s+
+    while i < n { if n_is_ws(s.substring(i, i + 1)) { i = i + 1 ws = ws + 1 } else { break } }
+    if ws == 0 { return false }
+    let after_ws = i
+    let mut p = after_ws
+    while p + 2 <= n {
+        if s.substring(p, p + 2) == "::" {
+            if p > after_ws {                                                         // .+? ≥1 char
+                if n_hdr_tail_ok(s, p + 2) { return true }
+            }
+        }
+        p = p + 1
+    }
+    return false
+}
+
+
+// ── §2 type alphabet + edge tokens (n6_lsp.py TYPES / EDGES) ──────────────────
+
+// TYPES keys (insertion order): P C L F R S X ? E
+fn n_is_type(ty: string) -> bool {
+    if ty == "P" { return true }
+    if ty == "C" { return true }
+    if ty == "L" { return true }
+    if ty == "F" { return true }
+    if ty == "R" { return true }
+    if ty == "S" { return true }
+    if ty == "X" { return true }
+    if ty == "?" { return true }
+    if ty == "E" { return true }
+    return false
+}
+
+fn n_type_desc(ty: string) -> string {
+    if ty == "P" { return "Primitive — irreducible foundational value" }
+    if ty == "C" { return "Constant — computed from primitives" }
+    if ty == "L" { return "Law — qualitative principle / invariant" }
+    if ty == "F" { return "Formula — explicit functional form" }
+    if ty == "R" { return "Relation — equality / structural identity" }
+    if ty == "S" { return "Symmetry — topological / group-theoretic property" }
+    if ty == "X" { return "Crossing — bridge between domains" }
+    if ty == "?" { return "Unknown — open hypothesis awaiting breakthrough" }
+    if ty == "E" { return "Experiment — empirical measurement record" }
+    return ""
+}
+
+// EDGES keys (insertion order): <- -> => == ~> |> !!
+fn n_is_edge(tok: string) -> bool {
+    if tok == "<-" { return true }
+    if tok == "->" { return true }
+    if tok == "=>" { return true }
+    if tok == "==" { return true }
+    if tok == "~>" { return true }
+    if tok == "|>" { return true }
+    if tok == "!!" { return true }
+    return false
+}
+
+fn n_edge_meaning(e: string) -> string {
+    if e == "<-" { return "depends_on" }
+    if e == "->" { return "derives" }
+    if e == "=>" { return "application" }
+    if e == "==" { return "equivalent" }
+    if e == "~>" { return "converges_to" }
+    if e == "|>" { return "verified_by" }
+    if e == "!!" { return "breakthrough" }
+    return ""
+}
+
+
+// ── §3 diagnostic record + validate(text) (faithful port) ────────────────────
+
+fn n_diag(ln: int, c0: int, c1: int, msg: string, sev: int) -> any {
+    return #{ "line": ln, "c0": c0, "c1": c1, "severity": sev, "message": msg }
+}
+
+fn n_validate(text: string) -> array {
+    let mut out = []
+
+    // BOM: Python `text.startswith("﻿")` → UTF-8 BOM bytes ef bb bf at offset 0.
+    if len(text) >= 3 {
+        if byte_at(text, 0) == 239 {
+            if byte_at(text, 1) == 187 {
+                if byte_at(text, 2) == 191 {
+                    out = out.push(n_diag(0, 0, 1, "byte-canonical: UTF-8 with no BOM", 1))
+                }
+            }
+        }
+    }
+    // CR: Python `"\r" in text`.
+    if text.index_of("\r") >= 0 {
+        out = out.push(n_diag(0, 0, 1, "byte-canonical: LF line endings only", 1))
+    }
+
+    let alphabet = "P @C @L @F @R @S @X @? @E"
+    let edges_list = "<- -> => == ~> |> !!"
+
+    let lines = text.split("\n")
+    let nlines = len(lines)
+    let mut i = 0
+    while i < nlines {
+        let raw = to_string(lines[i])
+        let s = n_rstrip_cr(raw)
+        let t = n_strip(s)
+        if t == "" || n_starts_with(t, "#") {
+            i = i + 1
+        } else {
+            let indent = n_indent(s)
+            if n_starts_with(s, "@") {
+                if indent != 0 {
+                    out = out.push(n_diag(i, 0, len(s), "entry header must start at column 0", 1))
+                    i = i + 1
+                } else {
+                    let mut ty = ""
+                    if len(s) > 1 { ty = s.substring(1, 2) }
+                    if n_is_type(ty) == false {
+                        out = out.push(n_diag(i, 1, 2,
+                            "unknown entry type @" + ty + " (alphabet: @" + alphabet + ")", 1))
+                    }
+                    if n_match_hdr(s) == false {
+                        out = out.push(n_diag(i, 0, len(s),
+                            "malformed header — expected `@<type> <id>[ = <expr>] :: <domain> [<grade>]`", 1))
+                    }
+                    i = i + 1
+                }
+            } else {
+                if indent != 2 {
+                    out = out.push(n_diag(i, 0, len(s), "continuation indented exactly 2 spaces", 1))
+                    i = i + 1
+                } else {
+                    let tok = n_first_token_space(t)
+                    let recognised = n_is_edge(tok) || n_starts_with(t, "\"") || n_match_kv(t)
+                    if recognised == false {
+                        out = out.push(n_diag(i, 2, len(s),
+                            "unrecognised continuation — expected an edge (" + edges_list + ") or \"prose\"", 2))
+                    }
+                    i = i + 1
+                }
+            }
+        }
+    }
+    return out
+}
+
+
+// ── §4 hover(line) — spec hover strings (faithful port) ──────────────────────
+
+fn n_hover(line: string) -> string {
+    let s = n_strip(line)
+    if n_starts_with(s, "@") {
+        if len(s) > 1 {
+            let ty = s.substring(1, 2)
+            if n_is_type(ty) {
+                return "**@" + ty + "** — " + n_type_desc(ty)
+            }
+        }
+    }
+    if n_starts_with(s, "<-") { return "**<-** — " + n_edge_meaning("<-") + " edge" }
+    if n_starts_with(s, "->") { return "**->** — " + n_edge_meaning("->") + " edge" }
+    if n_starts_with(s, "=>") { return "**=>** — " + n_edge_meaning("=>") + " edge" }
+    if n_starts_with(s, "==") { return "**==** — " + n_edge_meaning("==") + " edge" }
+    if n_starts_with(s, "~>") { return "**~>** — " + n_edge_meaning("~>") + " edge" }
+    if n_starts_with(s, "|>") { return "**|>** — " + n_edge_meaning("|>") + " edge" }
+    if n_starts_with(s, "!!") { return "**!!** — " + n_edge_meaning("!!") + " edge" }
+    return ""
+}
+
+
+// ── §5 --check FILE — one-shot lint (faithful port of main()) ────────────────
+
+fn n_normalize_newlines(s: string) -> string {
+    let mut a = s.replace("\r\n", "\n")
+    a = a.replace("\r", "\n")
+    return a
+}
+
+fn n_check_file(path: string) -> int {
+    let raw = read_file(path)
+    let text = n_normalize_newlines(raw)
+    let ds = n_validate(text)
+    let nd = len(ds)
+    let mut any_error = false
+    let mut i = 0
+    while i < nd {
+        let d = ds[i]
+        let ln = to_int(d["line"]) + 1
+        let sev = to_int(d["severity"])
+        let mut prefix = ""
+        if sev != 1 { prefix = "[hint] " }
+        println(path + ":" + to_string(ln) + ": " + prefix + to_string(d["message"]))
+        if sev == 1 { any_error = true }
+        i = i + 1
+    }
+    if any_error { return 1 }
+    return 0
+}
+
+
+// ── §6 stdio JSON-RPC server (LSP 3.17 subset, read_stdin_n_c FFI) ────────────
+
+extern fn read_stdin_n_c(n: int) -> int
+
+fn n_json_escape(s: string) -> string {
+    let mut out = ""
+    let mut i = 0
+    while i < len(s) {
+        let c = s.substring(i, i + 1)
+        if c == "\"" { out = out + "\\\"" }
+        else if c == "\\" { out = out + "\\\\" }
+        else if c == "\n" { out = out + "\\n" }
+        else if c == "\t" { out = out + "\\t" }
+        else if c == "\r" { out = out + "\\r" }
+        else { out = out + c }
+        i = i + 1
+    }
+    return out
+}
+
+fn n_extract_str(msg: string, key: string) -> string {
+    let idx = msg.index_of(key)
+    if idx < 0 { return "" }
+    let after = msg.substring(idx + len(key), len(msg))
+    let mut i = 0
+    let mut out = ""
+    while i < len(after) {
+        let c = after.substring(i, i + 1)
+        if c == "\\" && i + 1 < len(after) {
+            let nx = after.substring(i + 1, i + 2)
+            if nx == "\"" { out = out + "\""; i = i + 2; continue }
+            if nx == "n"  { out = out + "\n"; i = i + 2; continue }
+            if nx == "t"  { out = out + "\t"; i = i + 2; continue }
+            if nx == "\\" { out = out + "\\"; i = i + 2; continue }
+            out = out + c
+            i = i + 1
+            continue
+        }
+        if c == "\"" { break }
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+fn n_extract_method(msg: string) -> string { return n_extract_str(msg, "\"method\":\"") }
+fn n_extract_uri(msg: string) -> string { return n_extract_str(msg, "\"uri\":\"") }
+fn n_extract_text(msg: string) -> string { return n_extract_str(msg, "\"text\":\"") }
+
+fn n_extract_id(msg: string) -> string {
+    let key = "\"id\":"
+    let idx = msg.index_of(key)
+    if idx < 0 { return "" }
+    let after = msg.substring(idx + len(key), len(msg)).trim_start()
+    if after.starts_with("\"") {
+        let e = after.substring(1, len(after)).index_of("\"")
+        if e < 0 { return "" }
+        return "\"" + after.substring(1, 1 + e) + "\""
+    }
+    let mut i = 0
+    while i < len(after) {
+        let c = after.substring(i, i + 1)
+        if c == "," || c == "}" || c == " " || c == "\n" { break }
+        i = i + 1
+    }
+    return after.substring(0, i)
+}
+
+fn n_read_n(n: int) -> string {
+    let mut out = ""
+    while len(out) < n {
+        let chunk = from_cstring(read_stdin_n_c(n - len(out)))
+        if len(chunk) == 0 { break }
+        out = out + chunk
+    }
+    return out
+}
+
+fn n_lsp_read_message() -> string {
+    let mut h = ""
+    while true {
+        let b = from_cstring(read_stdin_n_c(1))
+        if len(b) == 0 { return "" }
+        h = h + b
+        let hl = len(h)
+        if hl >= 4 && h.substring(hl - 4, hl) == "\r\n\r\n" { break }
+    }
+    let key = "Content-Length:"
+    let idx = h.index_of(key)
+    if idx < 0 { return "" }
+    let after = h.substring(idx + len(key), len(h)).trim_start()
+    let mut i = 0
+    while i < len(after) {
+        let c = after.substring(i, i + 1)
+        if c < "0" || c > "9" { break }
+        i = i + 1
+    }
+    if i == 0 { return "" }
+    let n = to_int(after.substring(0, i))
+    if n <= 0 { return "" }
+    return n_read_n(n)
+}
+
+fn n_lsp_write(body: string) {
+    print("Content-Length: " + to_string(len(body)) + "\r\n\r\n" + body)
+}
+
+fn n_diag_json(d: any) -> string {
+    return "{\"range\":{\"start\":{\"line\":" + to_string(d["line"]) +
+           ",\"character\":" + to_string(d["c0"]) + "},\"end\":{\"line\":" + to_string(d["line"]) +
+           ",\"character\":" + to_string(d["c1"]) + "}},\"severity\":" + to_string(d["severity"]) +
+           ",\"source\":\"n6-lsp\",\"message\":\"" + n_json_escape(to_string(d["message"])) + "\"}"
+}
+
+fn n_diags_to_json(diags: array) -> string {
+    let mut out = "["
+    let mut i = 0
+    while i < len(diags) {
+        if i > 0 { out = out + "," }
+        out = out + n_diag_json(diags[i])
+        i = i + 1
+    }
+    return out + "]"
+}
+
+fn n_lsp_capabilities() -> string {
+    return "{\"capabilities\":{\"textDocumentSync\":{\"openClose\":true,\"change\":1,\"save\":{\"includeText\":true}}," +
+           "\"diagnosticProvider\":{\"interFileDependencies\":false,\"workspaceDiagnostics\":false}}," +
+           "\"serverInfo\":{\"name\":\"n6-lsp-hexa\",\"version\":\"0.1.0\"}}"
+}
+
+fn n_publish(uri: string, text: string) {
+    let params = "{\"uri\":\"" + uri + "\",\"diagnostics\":" + n_diags_to_json(n_validate(text)) + "}"
+    n_lsp_write("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":" + params + "}")
+}
+
+fn n_lsp_serve() {
+    while true {
+        let msg = n_lsp_read_message()
+        if msg == "" { break }
+        let method = n_extract_method(msg)
+        let id = n_extract_id(msg)
+        if method == "initialize" {
+            n_lsp_write("{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":" + n_lsp_capabilities() + "}")
+        } else if method == "textDocument/didOpen" || method == "textDocument/didChange" || method == "textDocument/didSave" {
+            n_publish(n_extract_uri(msg), n_extract_text(msg))
+        } else if method == "shutdown" {
+            n_lsp_write("{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":null}")
+        } else if method == "exit" {
+            break
+        }
+    }
+}
+
+
+// ── §7 entrypoint ────────────────────────────────────────────────────────────
+
+fn main() {
+    let a = args()
+    let argc = len(a)
+    if argc >= 2 && to_string(a[1]) == "--stdio" {
+        n_lsp_serve()
+        exit(0)
+    }
+    if argc >= 3 {
+        if to_string(a[1]) == "--check" {
+            let rc = n_check_file(to_string(a[2]))
+            exit(rc)
+        }
+        if to_string(a[1]) == "--hover" {
+            if argc >= 4 {
+                let text = read_file(to_string(a[2]))
+                let lines = text.split("\n")
+                let ln = to_int(a[3])
+                if ln >= 0 && ln < len(lines) {
+                    let hv = n_hover(to_string(lines[ln]))
+                    if hv != "" { println(hv) }
+                }
+                exit(0)
+            }
+        }
+    }
+    println("n6-lsp (hexa): usage —")
+    println("  --check FILE          lint, exit 1 on error")
+    println("  --hover FILE LINENO   print the hover string for a 0-based line")
+    println("  --stdio               run the LSP stdio JSON-RPC server (Content-Length framed)")
+    exit(0)
+}
